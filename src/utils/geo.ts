@@ -1,0 +1,600 @@
+import type {
+  BarCandidate,
+  ExcludedZones,
+  OpeningPeriodLite,
+  Participant,
+  SessionState,
+  TransportMode,
+  TravelTimeInfo,
+} from '../types/apero';
+
+export interface ParisArrondissement {
+  code: string; // '75001'..'75020'
+  shortLabel: string; // '1er'..'20e'
+  lat: number;
+  lng: number;
+}
+
+export const PARIS_ARRONDISSEMENTS: ParisArrondissement[] = [
+  {code: '75001', shortLabel: '1er', lat: 48.8626, lng: 2.3364},
+  {code: '75002', shortLabel: '2e', lat: 48.8682, lng: 2.3426},
+  {code: '75003', shortLabel: '3e', lat: 48.8629, lng: 2.3600},
+  {code: '75004', shortLabel: '4e', lat: 48.8543, lng: 2.3574},
+  {code: '75005', shortLabel: '5e', lat: 48.8448, lng: 2.3471},
+  {code: '75006', shortLabel: '6e', lat: 48.8492, lng: 2.3324},
+  {code: '75007', shortLabel: '7e', lat: 48.8565, lng: 2.3125},
+  {code: '75008', shortLabel: '8e', lat: 48.8744, lng: 2.3110},
+  {code: '75009', shortLabel: '9e', lat: 48.8769, lng: 2.3375},
+  {code: '75010', shortLabel: '10e', lat: 48.8761, lng: 2.3612},
+  {code: '75011', shortLabel: '11e', lat: 48.8588, lng: 2.3794},
+  {code: '75012', shortLabel: '12e', lat: 48.8396, lng: 2.3958},
+  {code: '75013', shortLabel: '13e', lat: 48.8286, lng: 2.3623},
+  {code: '75014', shortLabel: '14e', lat: 48.8296, lng: 2.3266},
+  {code: '75015', shortLabel: '15e', lat: 48.8414, lng: 2.2974},
+  {code: '75016', shortLabel: '16e', lat: 48.8602, lng: 2.2756},
+  {code: '75017', shortLabel: '17e', lat: 48.8872, lng: 2.3075},
+  {code: '75018', shortLabel: '18e', lat: 48.8919, lng: 2.3481},
+  {code: '75019', shortLabel: '19e', lat: 48.8870, lng: 2.3849},
+  {code: '75020', shortLabel: '20e', lat: 48.8634, lng: 2.4008},
+];
+
+// Typical urban speeds in meters/min.
+// To equalize travel *time*, slower modes get higher spatial weight (1 / speed).
+const MODE_SPEED_MPM: Record<TransportMode, number> = {
+  WALKING: 80,    // ~4.8 km/h
+  BICYCLING: 240, // ~14.4 km/h
+  TRANSIT: 330,   // ~19.8 km/h
+  DRIVING: 420,   // ~25.2 km/h urban traffic
+};
+
+export function calculateWeightedBarycenter(
+  participants: Participant[]
+): {lat: number; lng: number} | null {
+  if (participants.length === 0) return null;
+  if (participants.length === 1) {
+    return {lat: participants[0].lat, lng: participants[0].lng};
+  }
+
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  let totalWeight = 0;
+
+  for (const p of participants) {
+    const speed = MODE_SPEED_MPM[p.mode] || MODE_SPEED_MPM.TRANSIT;
+    const weight = 1 / speed;
+    const latRad = (p.lat * Math.PI) / 180;
+    const lngRad = (p.lng * Math.PI) / 180;
+    x += weight * Math.cos(latRad) * Math.cos(lngRad);
+    y += weight * Math.cos(latRad) * Math.sin(lngRad);
+    z += weight * Math.sin(latRad);
+    totalWeight += weight;
+  }
+
+  x /= totalWeight;
+  y /= totalWeight;
+  z /= totalWeight;
+
+  const centralLng = Math.atan2(y, x);
+  const centralHyp = Math.sqrt(x * x + y * y);
+  const centralLat = Math.atan2(z, centralHyp);
+
+  return {
+    lat: (centralLat * 180) / Math.PI,
+    lng: (centralLng * 180) / Math.PI,
+  };
+}
+
+export function haversineDistanceMeters(
+  a: {lat: number; lng: number},
+  b: {lat: number; lng: number}
+): number {
+  const R = 6371000;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLng = Math.sin(dLng / 2);
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
+  return 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+export function offsetLatLng(
+  origin: {lat: number; lng: number},
+  distanceMeters: number,
+  bearingDeg: number
+): {lat: number; lng: number} {
+  const R = 6371000;
+  const brng = (bearingDeg * Math.PI) / 180;
+  const lat1 = (origin.lat * Math.PI) / 180;
+  const lng1 = (origin.lng * Math.PI) / 180;
+  const angularDist = distanceMeters / R;
+
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDist) +
+      Math.cos(lat1) * Math.sin(angularDist) * Math.cos(brng)
+  );
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(brng) * Math.sin(angularDist) * Math.cos(lat1),
+      Math.cos(angularDist) - Math.sin(lat1) * Math.sin(lat2)
+    );
+
+  return {
+    lat: (lat2 * 180) / Math.PI,
+    lng: (lng2 * 180) / Math.PI,
+  };
+}
+
+export function extractPostalCode(
+  formattedAddress: string,
+  addressComponents?: google.maps.places.AddressComponent[]
+): string | null {
+  if (addressComponents) {
+    const postal = addressComponents.find((c) => c.types?.includes('postal_code'));
+    const text = (postal?.longText || postal?.shortText || '').trim();
+    if (/^\d{5}$/.test(text)) {
+      return text === '75116' ? '75016' : text;
+    }
+  }
+  const match = formattedAddress.match(/\b(\d{5})\b/);
+  if (match) {
+    return match[1] === '75116' ? '75016' : match[1];
+  }
+  return null;
+}
+
+export function extractAllPostalCodesFromText(text: string): string[] {
+  const matches = text.match(/\b\d{5}\b/g);
+  if (!matches) return [];
+  const normalized = new Set<string>();
+  for (const code of matches) {
+    normalized.add(code);
+    if (code === '75116') normalized.add('75016');
+  }
+  return Array.from(normalized);
+}
+
+export function isPointInExcludedZones(
+  lat: number,
+  lng: number,
+  postalCode: string | null,
+  excludedZones: ExcludedZones,
+  addressText?: string
+): boolean {
+  const excludedCodes = excludedZones.postalCodes || [];
+
+  if (postalCode) {
+    const normalized = postalCode === '75116' ? '75016' : postalCode;
+    if (excludedCodes.includes(postalCode) || excludedCodes.includes(normalized)) {
+      return true;
+    }
+  }
+
+  if (addressText && excludedCodes.length > 0) {
+    const codesInAddress = extractAllPostalCodesFromText(addressText);
+    if (codesInAddress.some((code) => excludedCodes.includes(code))) {
+      return true;
+    }
+  }
+
+  for (const zone of excludedZones.customZones) {
+    const dist = haversineDistanceMeters({lat, lng}, {lat: zone.lat, lng: zone.lng});
+    if (dist <= (zone.radiusMeters || 500)) {
+      return true;
+    }
+  }
+
+  // Fallback spatial check when postalCode is absent (e.g. spiral center point check)
+  if (!postalCode && excludedCodes.length > 0) {
+    if (lat >= 48.81 && lat <= 48.91 && lng >= 2.22 && lng <= 2.47) {
+      let nearestArr: ParisArrondissement | null = null;
+      let nearestDist = Infinity;
+      for (const arr of PARIS_ARRONDISSEMENTS) {
+        const d = haversineDistanceMeters({lat, lng}, {lat: arr.lat, lng: arr.lng});
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearestArr = arr;
+        }
+      }
+      if (nearestArr && excludedCodes.includes(nearestArr.code)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+export const CARDINAL_DIRECTIONS: {label: string; bearingDeg: number}[] = [
+  {label: 'Nord', bearingDeg: 0},
+  {label: 'Nord-Est', bearingDeg: 45},
+  {label: 'Est', bearingDeg: 90},
+  {label: 'Sud-Est', bearingDeg: 135},
+  {label: 'Sud', bearingDeg: 180},
+  {label: 'Sud-Ouest', bearingDeg: 225},
+  {label: 'Ouest', bearingDeg: 270},
+  {label: 'Nord-Ouest', bearingDeg: 315},
+];
+
+export const SPIRAL_RADII_METERS = [1500, 2500, 4000] as const;
+
+export interface SpiralSearchPoint {
+  lat: number;
+  lng: number;
+  directionLabel: string;
+  radiusMeters: number;
+  avgParticipantDist: number;
+  isPointExcluded: boolean;
+}
+
+/**
+ * Generates the 8 cardinal/intercardinal points at a given radius around the origin barycenter,
+ * ordered to prioritize points outside excluded zones and closest to the participants.
+ */
+export function buildSpiralPointsForRadius(
+  originCenter: {lat: number; lng: number},
+  radiusMeters: number,
+  participants: Participant[],
+  excludedZones: ExcludedZones
+): SpiralSearchPoint[] {
+  const points = CARDINAL_DIRECTIONS.map((dir) => {
+    const pt = offsetLatLng(originCenter, radiusMeters, dir.bearingDeg);
+    const avgParticipantDist =
+      participants.length > 0
+        ? participants.reduce((sum, p) => sum + haversineDistanceMeters(p, pt), 0) /
+          participants.length
+        : radiusMeters;
+    const isPointExcluded = isPointInExcludedZones(pt.lat, pt.lng, null, excludedZones);
+    return {
+      lat: pt.lat,
+      lng: pt.lng,
+      directionLabel: dir.label,
+      radiusMeters,
+      avgParticipantDist,
+      isPointExcluded,
+    };
+  });
+
+  points.sort((a, b) => {
+    if (a.isPointExcluded !== b.isPointExcluded) {
+      return a.isPointExcluded ? 1 : -1;
+    }
+    return a.avgParticipantDist - b.avgParticipantDist;
+  });
+
+  return points;
+}
+
+export function computeBearingDegrees(
+  from: {lat: number; lng: number},
+  to: {lat: number; lng: number}
+): number {
+  const lat1 = (from.lat * Math.PI) / 180;
+  const lat2 = (to.lat * Math.PI) / 180;
+  const dLng = ((to.lng - from.lng) * Math.PI) / 180;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) -
+    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+export function evaluateOpeningStatus(
+  periods: OpeningPeriodLite[] | null,
+  targetDateInput: Date | string
+): {isOpen: boolean | null; closesLabel: string | null} {
+  if (!periods || periods.length === 0) {
+    return {isOpen: null, closesLabel: null};
+  }
+
+  if (periods.length === 1 && periods[0].close === null) {
+    return {isOpen: true, closesLabel: 'Ouvert 24h/24'};
+  }
+
+  const targetDate =
+    targetDateInput instanceof Date ? targetDateInput : new Date(targetDateInput);
+  const effectiveDate = Number.isNaN(targetDate.getTime()) ? new Date() : targetDate;
+
+  const targetMin =
+    effectiveDate.getDay() * 1440 +
+    effectiveDate.getHours() * 60 +
+    effectiveDate.getMinutes();
+
+  for (const period of periods) {
+    if (!period.open || !period.close) continue;
+    const openMin = period.open.day * 1440 + period.open.hour * 60 + period.open.minute;
+    let closeMin = period.close.day * 1440 + period.close.hour * 60 + period.close.minute;
+    if (closeMin <= openMin) {
+      closeMin += 7 * 1440;
+    }
+
+    const inRange =
+      (targetMin >= openMin && targetMin < closeMin) ||
+      (targetMin + 7 * 1440 >= openMin && targetMin + 7 * 1440 < closeMin);
+
+    if (inRange) {
+      const closeHour = String(period.close.hour).padStart(2, '0');
+      const closeMinute = String(period.close.minute).padStart(2, '0');
+      return {
+        isOpen: true,
+        closesLabel: `Ouvert · ferme à ${closeHour}h${closeMinute}`,
+      };
+    }
+  }
+
+  return {isOpen: false, closesLabel: 'Fermé sur ce créneau'};
+}
+
+export function estimateTravelSeconds(distanceMeters: number, mode: TransportMode): number {
+  const speedMetersPerMin = MODE_SPEED_MPM[mode] || MODE_SPEED_MPM.TRANSIT;
+  const baseWaitSeconds = mode === 'TRANSIT' ? 240 : 0;
+  const detourFactor = mode === 'WALKING' ? 1.2 : 1.3;
+  return Math.round(((distanceMeters * detourFactor) / speedMetersPerMin) * 60 + baseWaitSeconds);
+}
+
+export function formatDuration(seconds: number): string {
+  const mins = Math.max(1, Math.round(seconds / 60));
+  if (mins < 60) {
+    return `${mins} min`;
+  }
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem === 0 ? `${hours} h` : `${hours} h ${String(rem).padStart(2, '0')}`;
+}
+
+export function getModeLabel(mode: TransportMode): string {
+  switch (mode) {
+    case 'TRANSIT':
+      return 'Métro/RER';
+    case 'BICYCLING':
+      return 'Vélo';
+    case 'WALKING':
+      return 'Marche';
+    case 'DRIVING':
+      return 'Voiture';
+  }
+}
+
+export function getModeEmoji(mode: TransportMode): string {
+  switch (mode) {
+    case 'TRANSIT':
+      return '🚇';
+    case 'BICYCLING':
+      return '🚲';
+    case 'WALKING':
+      return '🚶';
+    case 'DRIVING':
+      return '🚗';
+  }
+}
+
+export function formatTransitLineBadge(
+  shortName?: string | null,
+  vehicleType?: string | null,
+  fullName?: string | null
+): string | null {
+  const raw = (shortName || '').trim();
+  const type = (vehicleType || '').toUpperCase();
+
+  if (raw) {
+    if ((type === 'SUBWAY' || type === 'METRO_RAIL') && /^\d{1,2}(bis)?$/i.test(raw)) {
+      return `M${raw}`;
+    }
+    if (
+      (type === 'HEAVY_RAIL' || type === 'COMMUTER_TRAIN' || type === 'RAIL') &&
+      /^[A-E]$/i.test(raw)
+    ) {
+      return `RER ${raw.toUpperCase()}`;
+    }
+    if (type === 'TRAM' && /^\d/.test(raw)) {
+      return `T${raw}`;
+    }
+    if (type === 'BUS' && /^\d/.test(raw)) {
+      return `Bus ${raw}`;
+    }
+    return raw;
+  }
+
+  const name = (fullName || '').trim();
+  return name ? name.slice(0, 12) : null;
+}
+
+export function buildWhatsAppUrl(text: string): string {
+  return `https://wa.me/?text=${encodeURIComponent(text)}`;
+}
+
+export function parseNumericPriceLevel(priceLevel: string | number | null | undefined): number | null {
+  if (typeof priceLevel === 'number' && Number.isFinite(priceLevel)) {
+    return priceLevel;
+  }
+  if (typeof priceLevel === 'string') {
+    const normalized = priceLevel.toUpperCase();
+    if (normalized === 'FREE' || normalized === 'PRICE_LEVEL_FREE') return 0;
+    if (normalized === 'INEXPENSIVE' || normalized === 'PRICE_LEVEL_INEXPENSIVE') return 1;
+    if (normalized === 'MODERATE' || normalized === 'PRICE_LEVEL_MODERATE') return 2;
+    if (normalized === 'EXPENSIVE' || normalized === 'PRICE_LEVEL_EXPENSIVE') return 3;
+    if (normalized === 'VERY_EXPENSIVE' || normalized === 'PRICE_LEVEL_VERY_EXPENSIVE') return 4;
+  }
+  return null;
+}
+
+export function parseNumericPintPrice(customPrice?: string): number | null {
+  if (!customPrice) return null;
+  const normalized = customPrice.replace(',', '.').trim();
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function isCheapBar(bar: BarCandidate, customPrice?: string): boolean {
+  const numericLevel = parseNumericPriceLevel(bar.priceLevel);
+  if (numericLevel !== null && numericLevel <= 1) {
+    return true;
+  }
+  const pint = parseNumericPintPrice(customPrice);
+  if (pint !== null && pint < 6) {
+    return true;
+  }
+  return false;
+}
+
+export function formatPriceLevel(priceLevel: string | number | null | undefined): {
+  label: string;
+  tier: 'cheap' | 'medium' | 'expensive' | 'unknown';
+  numericRank: number;
+} {
+  const numeric = parseNumericPriceLevel(priceLevel);
+  if (numeric === null) {
+    return {label: 'N/C', tier: 'unknown', numericRank: 2.5};
+  }
+  if (numeric <= 1) {
+    return {label: '€', tier: 'cheap', numericRank: numeric};
+  }
+  if (numeric === 2) {
+    return {label: '€€', tier: 'medium', numericRank: 2};
+  }
+  return {label: '€€€', tier: 'expensive', numericRank: numeric};
+}
+
+export function buildGoogleMapsUrl(bar: Pick<BarCandidate, 'id' | 'lat' | 'lng' | 'googleMapsURI' | 'name'>): string {
+  if (bar.googleMapsURI) return bar.googleMapsURI;
+  const query = encodeURIComponent(`${bar.name}`);
+  return `https://www.google.com/maps/search/?api=1&query=${bar.lat},${bar.lng}&query_place_id=${encodeURIComponent(bar.id)}&q=${query}`;
+}
+
+export function buildCitymapperUrl(bar: Pick<BarCandidate, 'lat' | 'lng' | 'name'>): string {
+  return `https://citymapper.com/directions?endcoord=${bar.lat},${bar.lng}&endname=${encodeURIComponent(bar.name)}`;
+}
+
+export function formatFrenchDateTime(dateTimeStr: string): string {
+  try {
+    const d = new Date(dateTimeStr);
+    if (Number.isNaN(d.getTime())) return dateTimeStr;
+    return new Intl.DateTimeFormat('fr-FR', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(d);
+  } catch {
+    return dateTimeStr;
+  }
+}
+
+export function buildMessengerRecapText(
+  session: SessionState,
+  bar: BarCandidate,
+  travelTimesByParticipant: Record<string, TravelTimeInfo>
+): string {
+  const dateLabel = formatFrenchDateTime(session.dateTime);
+  const customPrice = session.customPrices[bar.id];
+  const priceTag = customPrice ? ` · Pinte ${customPrice} €` : '';
+  const voteCount = (session.votes[bar.id] || []).length;
+  const voteLine = voteCount > 0 ? ` (${voteCount} vote${voteCount > 1 ? 's' : ''})` : '';
+
+  const participantLines = session.participants.map((p) => {
+    const t = travelTimesByParticipant[p.id];
+    const durationStr = t ? formatDuration(t.durationSeconds) : 'N/C';
+    const lineTag = t?.transitLine ? ` [${t.transitLine}]` : '';
+    return `• ${p.name} (${getModeLabel(p.mode)}) : ${durationStr}${lineTag}`;
+  });
+
+  const gmapsUrl = buildGoogleMapsUrl(bar);
+  const citymapperUrl = buildCitymapperUrl(bar);
+
+  return [
+    `🍻 *${session.title}*${voteLine}`,
+    `📍 *${bar.name}*${priceTag}`,
+    bar.nearestStation ? `🚉 Métro/Station : ${bar.nearestStation}` : null,
+    `🏠 ${bar.address}`,
+    `🗓️ ${dateLabel}`,
+    '',
+    '⏱️ Trajets :',
+    ...(participantLines.length > 0 ? participantLines : ['• Ajoutez vos trajets sur le lien !']),
+    '',
+    `🗺️ Maps : ${gmapsUrl}`,
+    `🚇 Citymapper : ${citymapperUrl}`,
+  ]
+    .filter((line): line is string => line !== null)
+    .join('\n');
+}
+
+function toIcsUtcString(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    date.getUTCFullYear() +
+    pad(date.getUTCMonth() + 1) +
+    pad(date.getUTCDate()) +
+    'T' +
+    pad(date.getUTCHours()) +
+    pad(date.getUTCMinutes()) +
+    pad(date.getUTCSeconds()) +
+    'Z'
+  );
+}
+
+function escapeIcsText(text: string): string {
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,')
+    .replace(/\r?\n/g, '\\n');
+}
+
+export function downloadIcsFile(session: SessionState, bar: BarCandidate): void {
+  const start = new Date(session.dateTime);
+  const validStart = Number.isNaN(start.getTime()) ? new Date() : start;
+  const end = new Date(validStart.getTime() + 2 * 60 * 60 * 1000);
+
+  const gmapsUrl = buildGoogleMapsUrl(bar);
+  const citymapperUrl = buildCitymapperUrl(bar);
+  const customPrice = session.customPrices[bar.id];
+
+  const descriptionLines = [
+    `Lieu : ${bar.name}`,
+    `Adresse : ${bar.address}`,
+    customPrice ? `Prix pinte noté : ${customPrice} EUR` : null,
+    `Itinéraire Google Maps : ${gmapsUrl}`,
+    `Itinéraire Citymapper : ${citymapperUrl}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const icsContent = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//AperoCentral//PWA//FR',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:aperocentral-${bar.id}-${validStart.getTime()}@aperocentral.app`,
+    `DTSTAMP:${toIcsUtcString(new Date())}`,
+    `DTSTART:${toIcsUtcString(validStart)}`,
+    `DTEND:${toIcsUtcString(end)}`,
+    `SUMMARY:${escapeIcsText(`${session.title} — ${bar.name}`)}`,
+    `LOCATION:${escapeIcsText(`${bar.name}, ${bar.address}`)}`,
+    `DESCRIPTION:${escapeIcsText(descriptionLines)}`,
+    `URL:${gmapsUrl}`,
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+
+  const blob = new Blob([icsContent], {type: 'text/calendar;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  const safeTitle =
+    session.title
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '') || 'apero';
+  link.download = `aperocentral-${safeTitle}.ics`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}

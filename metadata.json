@@ -1,0 +1,6 @@
+{
+  "name": "ApéroCentral",
+  "description": "Trouve le bar le plus central pour votre apéro entre potes — sans compte ni base de données, directement partageable sur Messenger.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
