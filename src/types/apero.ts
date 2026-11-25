@@ -33,6 +33,25 @@ export interface SessionState {
   customPrices: Record<string, string>;
 }
 
+export interface SavedSessionRecord {
+  id: string;
+  updatedAt: number;
+  session: SessionState;
+}
+
+export interface SavedPlaceSpot {
+  address: string;
+  lat: number;
+  lng: number;
+}
+
+export interface UserProfile {
+  name: string;
+  home: SavedPlaceSpot | null;
+  work: SavedPlaceSpot | null;
+  preferredMode: TransportMode;
+}
+
 export interface SavedFavoriteAddress {
   id: string;
   label: string; // e.g. 'Maison', 'Travail'
@@ -69,6 +88,7 @@ export interface OpeningPeriodLite {
 export interface BarCandidate {
   id: string;
   name: string;
+  primaryType?: string | null;
   address: string;
   postalCode: string | null;
   lat: number;
@@ -85,12 +105,28 @@ export interface BarCandidate {
   nearestStation?: string | null;
 }
 
+export interface RouteStepDetail {
+  kind: 'TRANSIT' | 'WALKING' | 'BICYCLING' | 'DRIVING';
+  durationSeconds: number | null;
+  distanceMeters: number;
+  lineBadge?: string | null;
+  lineColor?: string | null;
+  headsign?: string | null;
+  departureStop?: string | null;
+  arrivalStop?: string | null;
+  stopCount?: number | null;
+  instructions?: string | null;
+}
+
 export interface TravelTimeInfo {
   durationSeconds: number;
   distanceMeters: number;
   isEstimate?: boolean;
   transitLine?: string | null; // e.g. 'M11', 'RER A'
   transitLineColor?: string | null;
+  routeSummary?: string | null; // e.g. 'M1 + M4 + 4 min à pied'
+  steps?: RouteStepDetail[];
 }
 
 export type SortCriterion = 'fairness' | 'price' | 'rating';
+export type ThemeMode = 'dark' | 'light';

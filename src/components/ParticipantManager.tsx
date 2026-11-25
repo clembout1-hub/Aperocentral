@@ -1,4 +1,4 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {
   Bike,
   BookmarkPlus,
@@ -14,8 +14,14 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import type {Participant, SavedFavoriteAddress, TransportMode} from '../types/apero';
-import {getModeLabel} from '../utils/geo';
+import type {
+  Participant,
+  SavedFavoriteAddress,
+  SavedPlaceSpot,
+  TransportMode,
+  UserProfile,
+} from '../types/apero';
+import {getModeLabel, isAddressMatchingSpot} from '../utils/geo';
 import {
   loadFavoriteAddresses,
   loadUserPrefs,
@@ -23,6 +29,14 @@ import {
   saveUserPrefs,
 } from '../utils/storage';
 import {AddressAutocompleteInput} from './AddressAutocompleteInput';
+import {FavoriteSpotIcon} from './FavoriteSpotIcon';
+
+export interface DraftDepartureState {
+  isFormOpen: boolean;
+  isCurrentUserContext: boolean;
+  address: string;
+  coords: {lat: number; lng: number} | null;
+}
 
 interface ParticipantManagerProps {
   participants: Participant[];
@@ -31,6 +45,17 @@ interface ParticipantManagerProps {
   activeUserName: string;
   onSetActiveUserName: (name: string) => void;
   mapsReady: boolean;
+  userProfile: UserProfile;
+  lastProfileJoin: {
+    name: string;
+    address: string;
+    lat: number;
+    lng: number;
+    mode: TransportMode;
+    seq: number;
+  } | null;
+  onSyncFavoriteSpot: (slot: 'home' | 'work', spot: SavedPlaceSpot | null) => void;
+  onDraftDepartureChange: (draft: DraftDepartureState) => void;
 }
 
 const MODES: {id: TransportMode; label: string; icon: React.ComponentType<{className?: string}>}[] = [
@@ -49,6 +74,40 @@ const AVATAR_TONES = [
   'bg-[#FF375F] text-white',
 ];
 
+function mergeProfileIntoFavorites(
+  current: SavedFavoriteAddress[],
+  profile: UserProfile
+): SavedFavoriteAddress[] {
+  const others = current.filter(
+    (f) => f.label.toLowerCase() !== 'maison' && f.label.toLowerCase() !== 'travail'
+  );
+  const oldHome = current.find((f) => f.label.toLowerCase() === 'maison');
+  const oldWork = current.find((f) => f.label.toLowerCase() === 'travail');
+
+  const next: SavedFavoriteAddress[] = [...others];
+  if (profile.home) {
+    next.push({
+      id: 'maison',
+      label: 'Maison',
+      address: profile.home.address,
+      lat: profile.home.lat,
+      lng: profile.home.lng,
+      mode: oldHome?.mode || profile.preferredMode || 'TRANSIT',
+    });
+  }
+  if (profile.work) {
+    next.push({
+      id: 'travail',
+      label: 'Travail',
+      address: profile.work.address,
+      lat: profile.work.lat,
+      lng: profile.work.lng,
+      mode: oldWork?.mode || profile.preferredMode || 'TRANSIT',
+    });
+  }
+  return next;
+}
+
 export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
   participants,
   onUpsertParticipant,
@@ -56,6 +115,10 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
   activeUserName,
   onSetActiveUserName,
   mapsReady,
+  userProfile,
+  lastProfileJoin,
+  onSyncFavoriteSpot,
+  onDraftDepartureChange,
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -65,7 +128,9 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
   const [rememberMe, setRememberMe] = useState(true);
   const [formError, setFormError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(true);
-  const [favorites, setFavorites] = useState<SavedFavoriteAddress[]>(() => loadFavoriteAddresses());
+  const [favorites, setFavorites] = useState<SavedFavoriteAddress[]>(() =>
+    mergeProfileIntoFavorites(loadFavoriteAddresses(), userProfile)
+  );
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [editingFavSlot, setEditingFavSlot] = useState<'Maison' | 'Travail' | null>(null);
   const [favAddressInput, setFavAddressInput] = useState('');
@@ -93,11 +158,107 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Keep local favorites in sync whenever QuickProfileCard saves home/work
+  useEffect(() => {
+    setFavorites((prev) => {
+      const merged = mergeProfileIntoFavorites(prev, userProfile);
+      saveFavoriteAddresses(merged);
+      return merged;
+    });
+  }, [userProfile.home, userProfile.work, userProfile.preferredMode]);
+
+  // Keep open form synced if user taps Maison/Travail in QuickProfileCard
+  useEffect(() => {
+    if (!lastProfileJoin) return;
+    const normalizedCurrentUser = (activeUserName || userProfile.name).trim().toLowerCase();
+    const editingParticipant = editingId
+      ? participants.find((p) => p.id === editingId)
+      : null;
+    const isEditingCurrentUser = Boolean(
+      editingParticipant &&
+        normalizedCurrentUser &&
+        editingParticipant.name.trim().toLowerCase() === normalizedCurrentUser
+    );
+    const isFreshCurrentUserForm =
+      !editingId &&
+      (!name.trim() ||
+        !normalizedCurrentUser ||
+        name.trim().toLowerCase() === normalizedCurrentUser);
+
+    if (isEditingCurrentUser || isFreshCurrentUserForm) {
+      setName(lastProfileJoin.name);
+      setAddress(lastProfileJoin.address);
+      setCoords({lat: lastProfileJoin.lat, lng: lastProfileJoin.lng});
+      setMode(lastProfileJoin.mode);
+      setFormError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastProfileJoin?.seq]);
+
+  // Bubble live draft departure state so QuickProfileCard reflects manual edits immediately
+  useEffect(() => {
+    const normalizedUser = (activeUserName || userProfile.name).trim().toLowerCase();
+    const editingParticipant = editingId
+      ? participants.find((p) => p.id === editingId)
+      : null;
+    const alreadyHasCurrentUser = Boolean(
+      normalizedUser &&
+        participants.some((p) => p.name.trim().toLowerCase() === normalizedUser)
+    );
+    const isCurrentUserContext = showForm
+      ? editingParticipant
+        ? !normalizedUser ||
+          editingParticipant.name.trim().toLowerCase() === normalizedUser
+        : !alreadyHasCurrentUser ||
+          (Boolean(normalizedUser) && name.trim().toLowerCase() === normalizedUser)
+      : false;
+
+    onDraftDepartureChange({
+      isFormOpen: showForm,
+      isCurrentUserContext,
+      address,
+      coords,
+    });
+  }, [
+    showForm,
+    address,
+    coords,
+    editingId,
+    name,
+    activeUserName,
+    userProfile.name,
+    participants,
+    onDraftDepartureChange,
+  ]);
+
   useEffect(() => {
     if (!savedNotice) return;
     const t = window.setTimeout(() => setSavedNotice(null), 2400);
     return () => window.clearTimeout(t);
   }, [savedNotice]);
+
+  const currentUserParticipant = useMemo(() => {
+    const targetName = (activeUserName || userProfile.name).trim().toLowerCase();
+    if (targetName) {
+      const matched = participants.find(
+        (p) => p.name.trim().toLowerCase() === targetName
+      );
+      if (matched) return matched;
+    }
+    if (participants.length === 1) {
+      return participants[0];
+    }
+    return null;
+  }, [participants, activeUserName, userProfile.name]);
+
+  const activeAddressForShortcuts = showForm
+    ? address
+    : currentUserParticipant?.address || '';
+  const activeCoordsForShortcuts = showForm
+    ? coords
+    : currentUserParticipant
+    ? {lat: currentUserParticipant.lat, lng: currentUserParticipant.lng}
+    : null;
 
   const resetFormToFresh = () => {
     setEditingId(null);
@@ -140,10 +301,11 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
     const existing = favorites.find(
       (f) => f.label.toLowerCase() === editingFavSlot.toLowerCase()
     );
+    const cleanAddr = favAddressInput.trim();
     const nextItem: SavedFavoriteAddress = {
       id: editingFavSlot.toLowerCase(),
       label: editingFavSlot,
-      address: favAddressInput.trim(),
+      address: cleanAddr,
       lat: favCoords.lat,
       lng: favCoords.lng,
       mode: existing?.mode || mode || 'TRANSIT',
@@ -154,6 +316,10 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
     ];
     setFavorites(nextFavorites);
     saveFavoriteAddresses(nextFavorites);
+    onSyncFavoriteSpot(
+      editingFavSlot === 'Maison' ? 'home' : 'work',
+      {address: cleanAddr, lat: favCoords.lat, lng: favCoords.lng}
+    );
     setEditingFavSlot(null);
     setFavAddressInput('');
     setFavCoords(null);
@@ -166,10 +332,11 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
       setFormError(`Choisis d'abord une adresse pour enregistrer "${label}".`);
       return;
     }
+    const cleanAddr = address.trim();
     const nextItem: SavedFavoriteAddress = {
       id: label.toLowerCase(),
       label,
-      address: address.trim(),
+      address: cleanAddr,
       lat: coords.lat,
       lng: coords.lng,
       mode,
@@ -180,6 +347,10 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
     ];
     setFavorites(nextFavorites);
     saveFavoriteAddresses(nextFavorites);
+    onSyncFavoriteSpot(
+      label === 'Maison' ? 'home' : 'work',
+      {address: cleanAddr, lat: coords.lat, lng: coords.lng}
+    );
     setSavedNotice(`"${label}" mémorisé sur ce téléphone`);
     setFormError(null);
   };
@@ -188,6 +359,11 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
     const next = favorites.filter((f) => f.id !== id);
     setFavorites(next);
     saveFavoriteAddresses(next);
+    if (id.toLowerCase() === 'maison') {
+      onSyncFavoriteSpot('home', null);
+    } else if (id.toLowerCase() === 'travail') {
+      onSyncFavoriteSpot('work', null);
+    }
     if (editingFavSlot && editingFavSlot.toLowerCase() === id.toLowerCase()) {
       setEditingFavSlot(null);
     }
@@ -195,9 +371,14 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
 
   const handleOneTapFavorite = (fav: SavedFavoriteAddress) => {
     const prefs = loadUserPrefs();
-    const resolvedName = (name.trim() || activeUserName.trim() || prefs?.name || '').trim();
+    const resolvedName = (
+      name.trim() ||
+      activeUserName.trim() ||
+      userProfile.name.trim() ||
+      prefs?.name ||
+      ''
+    ).trim();
 
-    // Always populate form fields immediately
     setAddress(fav.address);
     setCoords({lat: fav.lat, lng: fav.lng});
     setMode(fav.mode);
@@ -210,10 +391,11 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
       return;
     }
 
-    // If the user already has the add/edit form open, keep it filled so they can verify or edit
     if (showForm) {
-      setName(resolvedName);
-      setSavedNotice(`Adresse « ${fav.label} » remplie`);
+      if (!name.trim()) {
+        setName(resolvedName);
+      }
+      setSavedNotice(`Départ « ${fav.label} » sélectionné`);
       return;
     }
 
@@ -244,7 +426,7 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
       });
     }
     setEditingId(null);
-    setSavedNotice(`${resolvedName} ajouté depuis ${fav.label}`);
+    setSavedNotice(`${resolvedName} part de ${fav.label}`);
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -289,22 +471,25 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
     setShowForm(false);
   };
 
-  const favoriteSlots: {label: 'Maison' | 'Travail'; icon: typeof Home}[] = [
-    {label: 'Maison', icon: Home},
-    {label: 'Travail', icon: Briefcase},
+  const favoriteSlots: {label: 'Maison' | 'Travail'; spotType: 'home' | 'work'; icon: typeof Home}[] = [
+    {label: 'Maison', spotType: 'home', icon: Home},
+    {label: 'Travail', spotType: 'work', icon: Briefcase},
   ];
 
   return (
     <section
       aria-labelledby="participants-heading"
-      className="rounded-2xl border border-white/10 bg-[#1C1C1E]/75 p-4 backdrop-blur-xl"
+      className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 backdrop-blur-xl transition-colors"
     >
       <div className="flex items-center justify-between gap-2">
         <div>
-          <h2 id="participants-heading" className="text-base font-semibold tracking-tight text-white">
+          <h2
+            id="participants-heading"
+            className="text-base font-semibold tracking-tight text-[var(--text-primary)]"
+          >
             Participants ({participants.length})
           </h2>
-          <p className="text-xs text-[#8E8E93]">
+          <p className="text-xs text-[var(--text-secondary)]">
             Touche un prénom pour modifier son trajet
           </p>
         </div>
@@ -337,16 +522,16 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
           ) : (
             <>
               <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>Ajouter</span>
+              <span>Ajouter un ami</span>
             </>
           )}
         </button>
       </div>
 
-      {/* Always-available Maison & Travail Favorite Chips */}
+      {/* Favoris Maison & Travail */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <span className="text-[11px] font-medium text-[#8E8E93]">Favoris :</span>
-        {favoriteSlots.map(({label, icon: Icon}) => {
+        <span className="text-[11px] font-medium text-[var(--text-secondary)]">Raccourcis :</span>
+        {favoriteSlots.map(({label, spotType, icon: Icon}) => {
           const saved = favorites.find(
             (f) => f.label.toLowerCase() === label.toLowerCase()
           );
@@ -358,10 +543,10 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
                 key={label}
                 type="button"
                 onClick={() => handleOpenFavoriteEditor(label)}
-                className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                   isEditingThis
                     ? 'border-[#0A84FF] bg-[#0A84FF]/15 text-[#0A84FF]'
-                    : 'border-dashed border-white/20 bg-[#2C2C2E]/50 text-white/80 hover:border-[#0A84FF]/50 hover:text-white'
+                    : 'border-dashed dark:border-white/15 border-black/15 dark:bg-[#2C2C2E]/60 bg-[var(--bg-surface)] dark:text-[#8E8E93] text-[var(--text-secondary)] hover:border-[#0A84FF]/50 hover:text-[var(--text-primary)]'
                 }`}
               >
                 <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -370,37 +555,75 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
             );
           }
 
+          const isActive = isAddressMatchingSpot(
+            activeAddressForShortcuts,
+            activeCoordsForShortcuts,
+            saved
+          );
+
           return (
             <div
               key={label}
-              className="inline-flex items-center overflow-hidden rounded-full border border-[#0A84FF]/35 bg-[#0A84FF]/15"
+              className={`inline-flex items-center overflow-hidden rounded-full border transition-all ${
+                isActive
+                  ? 'bg-[#0A84FF] text-white border-[#0A84FF] shadow-[0_0_16px_rgba(10,132,255,0.45)] font-semibold'
+                  : 'dark:bg-[#2C2C2E]/80 dark:text-[#8E8E93] dark:border-white/10 bg-[#E5E5EA]/85 text-[#636366] border-black/10'
+              }`}
             >
               <button
                 type="button"
+                aria-pressed={isActive}
                 onClick={() => handleOneTapFavorite(saved)}
                 title={`${saved.label} : ${saved.address}`}
-                className="inline-flex min-h-[36px] items-center gap-1.5 px-3 py-1 text-xs font-semibold text-[#0A84FF] transition-colors hover:bg-[#0A84FF]/15"
+                className={`inline-flex min-h-[38px] items-center gap-1.5 px-3 py-1 text-xs transition-colors ${
+                  isActive
+                    ? 'font-semibold text-white'
+                    : 'font-medium dark:text-[#8E8E93] text-[#636366] hover:text-[var(--text-primary)]'
+                }`}
               >
-                <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <FavoriteSpotIcon
+                  type={spotType}
+                  filled={isActive}
+                  className="h-3.5 w-3.5 shrink-0"
+                />
                 <span>{saved.label}</span>
+                {isActive && (
+                  <Check className="h-3.5 w-3.5 shrink-0 stroke-[2.75]" aria-hidden="true" />
+                )}
               </button>
+
               <button
                 type="button"
-                onClick={() => handleOpenFavoriteEditor(label, saved)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleOpenFavoriteEditor(label, saved);
+                }}
                 aria-label={`Modifier ${saved.label}`}
                 title={`Modifier ${saved.label}`}
-                className="inline-flex min-h-[36px] items-center justify-center border-l border-white/10 px-2 text-[#8E8E93] hover:bg-white/10 hover:text-white"
+                className={`inline-flex min-h-[38px] items-center justify-center border-l px-2 transition-colors ${
+                  isActive
+                    ? 'border-white/25 text-white/85 hover:bg-white/15 hover:text-white'
+                    : 'dark:border-white/10 border-black/10 dark:text-[#8E8E93] text-[#636366] hover:text-[var(--text-primary)]'
+                }`}
               >
-                <Pencil className="h-3 w-3" />
+                <Pencil className="h-3 w-3" aria-hidden="true" />
               </button>
+
               <button
                 type="button"
-                onClick={() => handleRemoveFavorite(saved.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleRemoveFavorite(saved.id);
+                }}
                 aria-label={`Supprimer le favori ${saved.label}`}
                 title={`Supprimer ${saved.label}`}
-                className="inline-flex min-h-[36px] items-center justify-center border-l border-white/10 px-2 text-[#8E8E93] hover:bg-[#FF453A]/20 hover:text-[#FF453A]"
+                className={`inline-flex min-h-[38px] items-center justify-center border-l px-2 transition-colors ${
+                  isActive
+                    ? 'border-white/25 text-white/85 hover:bg-[#FF453A] hover:text-white'
+                    : 'dark:border-white/10 border-black/10 dark:text-[#8E8E93] text-[#636366] hover:bg-[#FF453A]/20 hover:text-[#FF453A]'
+                }`}
               >
-                <X className="h-3 w-3" />
+                <X className="h-3 w-3" aria-hidden="true" />
               </button>
             </div>
           );
@@ -411,10 +634,10 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
       {editingFavSlot && (
         <form
           onSubmit={handleSaveInlineFavorite}
-          className="mt-2.5 space-y-2.5 rounded-2xl border border-[#0A84FF]/35 bg-[#2C2C2E]/60 p-3"
+          className="mt-2.5 space-y-2.5 rounded-2xl border border-[#0A84FF]/35 bg-[var(--bg-surface)] p-3"
         >
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-white">
+            <span className="text-xs font-semibold text-[var(--text-primary)]">
               Adresse favorite « {editingFavSlot} »
             </span>
             <button
@@ -424,7 +647,7 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
                 setFavError(null);
               }}
               aria-label="Fermer"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[#8E8E93] hover:bg-white/10 hover:text-white"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -465,7 +688,7 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
                 setEditingFavSlot(null);
                 setFavError(null);
               }}
-              className="min-h-[36px] rounded-full border border-white/10 bg-[#1C1C1E] px-3.5 py-1 text-xs font-medium text-white/80 hover:text-white"
+              className="min-h-[36px] rounded-full border border-[var(--border-subtle)] bg-[var(--bg-card-strong)] px-3.5 py-1 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
             >
               Annuler
             </button>
@@ -485,9 +708,9 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
         </p>
       )}
 
-      {/* Participant List (iOS grouped list) */}
+      {/* Participant List */}
       {participants.length > 0 && (
-        <ul className="mt-3 divide-y divide-white/10 overflow-hidden rounded-2xl border border-white/10 bg-[#2C2C2E]/40">
+        <ul className="mt-3 divide-y divide-[var(--border-subtle)] overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
           {participants.map((p, idx) => {
             const isEditing = editingId === p.id;
             const avatarTone = AVATAR_TONES[idx % AVATAR_TONES.length];
@@ -498,7 +721,7 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
                   type="button"
                   onClick={() => handleStartEdit(p)}
                   className={`flex min-h-[44px] flex-1 items-center gap-3 rounded-xl px-1.5 text-left transition-colors ${
-                    isEditing ? 'bg-[#0A84FF]/15' : 'hover:bg-white/5'
+                    isEditing ? 'bg-[#0A84FF]/15' : 'hover:bg-[var(--bg-surface-hover)]/40'
                   }`}
                 >
                   <span
@@ -508,16 +731,21 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
                     {initial}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 text-sm font-semibold text-white">
+                    <div className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]">
                       <span className="truncate">{p.name}</span>
-                      <span aria-hidden="true" className="text-[#8E8E93]">·</span>
+                      <span aria-hidden="true" className="text-[var(--text-secondary)]">
+                        ·
+                      </span>
                       <span className="text-xs font-medium text-[#0A84FF] whitespace-nowrap">
                         {getModeLabel(p.mode)}
                       </span>
                     </div>
-                    <p className="truncate text-xs text-[#8E8E93]">{p.address}</p>
+                    <p className="truncate text-xs text-[var(--text-secondary)]">{p.address}</p>
                   </div>
-                  <Pencil className="h-3.5 w-3.5 shrink-0 text-[#8E8E93]" aria-hidden="true" />
+                  <Pencil
+                    className="h-3.5 w-3.5 shrink-0 text-[var(--text-secondary)]"
+                    aria-hidden="true"
+                  />
                 </button>
 
                 <button
@@ -527,7 +755,7 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
                     onRemoveParticipant(p.id);
                   }}
                   aria-label={`Supprimer ${p.name}`}
-                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[#8E8E93] transition-colors hover:bg-[#FF453A]/15 hover:text-[#FF453A]"
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] transition-colors hover:bg-[#FF453A]/15 hover:text-[#FF453A]"
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
@@ -537,12 +765,15 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
         </ul>
       )}
 
-      {/* iOS Grouped Add / Edit Form */}
+      {/* Add / Edit Form */}
       {showForm && (
-        <form onSubmit={handleSubmit} className="mt-3.5 space-y-3 border-t border-white/10 pt-3.5">
+        <form
+          onSubmit={handleSubmit}
+          className="mt-3.5 space-y-3 border-t border-[var(--border-subtle)] pt-3.5"
+        >
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-white/90">
-              {editingId ? `Modifier ${name || 'ce participant'}` : 'Ajouter mon départ / un ami'}
+            <span className="text-xs font-semibold text-[var(--text-muted)]">
+              {editingId ? `Modifier ${name || 'ce participant'}` : 'Ajouter un ami / un départ'}
             </span>
             {editingId && (
               <button
@@ -555,9 +786,12 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
             )}
           </div>
 
-          <div className="divide-y divide-white/10 rounded-2xl border border-white/10 bg-[#2C2C2E]/40 p-3 space-y-3">
+          <div className="divide-y divide-[var(--border-subtle)] rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 space-y-3">
             <div className="pb-3">
-              <label htmlFor="participant-name" className="block text-[11px] font-medium text-[#8E8E93]">
+              <label
+                htmlFor="participant-name"
+                className="block text-[11px] font-medium text-[var(--text-secondary)]"
+              >
                 Prénom
               </label>
               <input
@@ -568,12 +802,15 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Ex: Camille"
                 maxLength={35}
-                className="mt-1 min-h-[42px] w-full rounded-xl border border-white/10 bg-[#2C2C2E]/70 px-3 py-2 text-sm text-white placeholder:text-[#8E8E93] focus:border-[#0A84FF] focus:outline-none"
+                className="mt-1 min-h-[42px] w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-input)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:border-[#0A84FF] focus:outline-none"
               />
             </div>
 
             <div>
-              <label htmlFor="participant-address" className="block text-[11px] font-medium text-[#8E8E93]">
+              <label
+                htmlFor="participant-address"
+                className="block text-[11px] font-medium text-[var(--text-secondary)]"
+              >
                 Point de départ
               </label>
               <div className="mt-1">
@@ -600,14 +837,14 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
 
               {coords && (
                 <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-1 text-[11px] text-[#8E8E93]">
+                  <span className="inline-flex items-center gap-1 text-[11px] text-[var(--text-secondary)]">
                     <BookmarkPlus className="h-3 w-3" aria-hidden="true" />
                     <span>Sauvegarder :</span>
                   </span>
                   <button
                     type="button"
                     onClick={() => handleSaveFavorite('Maison')}
-                    className="inline-flex min-h-[30px] items-center gap-1 rounded-full border border-white/10 bg-[#2C2C2E] px-2.5 py-1 text-[11px] font-medium text-white/90 hover:border-[#0A84FF]/60 hover:text-[#0A84FF]"
+                    className="inline-flex min-h-[30px] items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-card-strong)] px-2.5 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[#0A84FF]/60 hover:text-[#0A84FF]"
                   >
                     <Home className="h-3 w-3" aria-hidden="true" />
                     <span>Maison</span>
@@ -615,7 +852,7 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
                   <button
                     type="button"
                     onClick={() => handleSaveFavorite('Travail')}
-                    className="inline-flex min-h-[30px] items-center gap-1 rounded-full border border-white/10 bg-[#2C2C2E] px-2.5 py-1 text-[11px] font-medium text-white/90 hover:border-[#0A84FF]/60 hover:text-[#0A84FF]"
+                    className="inline-flex min-h-[30px] items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-card-strong)] px-2.5 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[#0A84FF]/60 hover:text-[#0A84FF]"
                   >
                     <Briefcase className="h-3 w-3" aria-hidden="true" />
                     <span>Travail</span>
@@ -625,15 +862,15 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
             </div>
           </div>
 
-          {/* iOS Segmented Control (4 transport modes) */}
+          {/* 4 transport modes */}
           <div>
-            <span className="block text-[11px] font-medium text-[#8E8E93] mb-1.5">
+            <span className="mb-1.5 block text-[11px] font-medium text-[var(--text-secondary)]">
               Mode de transport
             </span>
             <div
               role="radiogroup"
               aria-label="Mode de transport"
-              className="grid grid-cols-4 gap-1 rounded-xl bg-[#2C2C2E]/85 p-1"
+              className="grid grid-cols-4 gap-1 rounded-xl bg-[var(--bg-surface)] p-1"
             >
               {MODES.map((m) => {
                 const Icon = m.icon;
@@ -648,7 +885,7 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
                     className={`flex min-h-[40px] flex-col sm:flex-row items-center justify-center gap-1 rounded-lg px-1.5 py-1.5 text-[11px] font-semibold transition-all ${
                       active
                         ? 'bg-[#0A84FF] text-white shadow-sm'
-                        : 'text-[#8E8E93] hover:text-white'
+                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                     }`}
                   >
                     <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -660,12 +897,12 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-            <label className="inline-flex min-h-[40px] cursor-pointer items-center gap-2 text-xs text-[#8E8E93] select-none">
+            <label className="inline-flex min-h-[40px] cursor-pointer items-center gap-2 text-xs text-[var(--text-secondary)] select-none">
               <input
                 type="checkbox"
                 checked={rememberMe}
                 onChange={(e) => setRememberMe(e.target.checked)}
-                className="h-4 w-4 rounded border-white/20 bg-[#2C2C2E] accent-[#0A84FF]"
+                className="h-4 w-4 rounded border-[var(--border-strong)] bg-[var(--bg-input)] accent-[#0A84FF]"
               />
               <span>Mémoriser sur ce téléphone</span>
             </label>

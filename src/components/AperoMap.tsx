@@ -1,4 +1,4 @@
-import React, {useEffect, useMemo, useState} from 'react';
+import React, {useEffect, useMemo} from 'react';
 import {
   AdvancedMarker,
   InfoWindow,
@@ -11,8 +11,6 @@ import {
   Beer,
   Crosshair,
   ExternalLink,
-  Maximize2,
-  Minimize2,
   Navigation,
   Star,
   TrainFront,
@@ -24,6 +22,7 @@ import {
   formatPriceLevel,
   isCheapBar,
 } from '../utils/geo';
+import type {SheetSnap} from './BottomSheet';
 
 interface AperoMapProps {
   participants: Participant[];
@@ -37,6 +36,8 @@ interface AperoMapProps {
   onSelectBar: (barId: string | null) => void;
   votes: Record<string, string[]>;
   customPrices: Record<string, string>;
+  isDarkMode: boolean;
+  sheetSnap: SheetSnap;
   onMapReady?: (map: google.maps.Map | null) => void;
 }
 
@@ -55,7 +56,8 @@ const BoundsFitter: React.FC<{
   centerPoint: {lat: number; lng: number} | null;
   effectiveSearchCenter: {lat: number; lng: number} | null;
   bars: BarCandidate[];
-}> = ({participants, centerPoint, effectiveSearchCenter, bars}) => {
+  sheetSnap: SheetSnap;
+}> = ({participants, centerPoint, effectiveSearchCenter, bars, sheetSnap}) => {
   const map = useMap();
   const coreLib = useMapsLibrary('core');
 
@@ -84,12 +86,26 @@ const BoundsFitter: React.FC<{
       return;
     }
 
+    const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 1024;
+    const vh = typeof window !== 'undefined' ? window.innerHeight : 844;
+    const mobileBottomPad =
+      sheetSnap === 'high'
+        ? Math.round(vh * 0.45)
+        : sheetSnap === 'mid'
+        ? Math.round(vh * 0.54)
+        : Math.round(vh * 0.22);
+
     const bounds = new coreLib.LatLngBounds();
     for (const pt of points) {
       bounds.extend(pt);
     }
-    map.fitBounds(bounds, {top: 44, right: 32, bottom: 44, left: 32});
-  }, [map, coreLib, participants, centerPoint, effectiveSearchCenter, bars]);
+    map.fitBounds(
+      bounds,
+      isDesktop
+        ? {top: 96, right: 48, bottom: 48, left: 480}
+        : {top: 96, right: 28, bottom: mobileBottomPad, left: 28}
+    );
+  }, [map, coreLib, participants, centerPoint, effectiveSearchCenter, bars, sheetSnap]);
 
   return null;
 };
@@ -183,7 +199,7 @@ const BarMarker: React.FC<BarMarkerProps> = ({
         <div
           className={`flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold shadow-lg transition-transform ${
             isSelected
-              ? 'scale-110 border-white bg-white text-black'
+              ? 'scale-110 border-[#0A84FF] bg-white text-black ring-2 ring-[#0A84FF]/60'
               : isWinner
               ? 'border-white/70 bg-[#0A84FF] text-white'
               : cheap
@@ -194,7 +210,7 @@ const BarMarker: React.FC<BarMarkerProps> = ({
           <Beer
             className={`h-3 w-3 shrink-0 ${
               isSelected
-                ? 'text-black'
+                ? 'text-[#0A84FF]'
                 : isWinner
                 ? 'text-white'
                 : cheap
@@ -295,10 +311,10 @@ export const AperoMap: React.FC<AperoMapProps> = ({
   onSelectBar,
   votes,
   customPrices,
+  isDarkMode,
+  sheetSnap,
   onMapReady,
 }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-
   const selectedBar = useMemo(
     () => bars.find((b) => b.id === selectedBarId) || null,
     [bars, selectedBarId]
@@ -310,16 +326,10 @@ export const AperoMap: React.FC<AperoMapProps> = ({
       Math.abs(centerPoint!.lng - effectiveSearchCenter!.lng) > 0.0005);
 
   return (
-    <div
-      className={`relative overflow-hidden rounded-3xl border border-white/10 bg-[#1C1C1E] transition-all ${
-        isExpanded
-          ? 'fixed inset-x-3 top-14 bottom-24 z-40 shadow-2xl lg:static lg:inset-auto lg:h-full'
-          : 'h-[38vh] min-h-[260px] lg:h-full lg:min-h-[540px]'
-      }`}
-    >
+    <div className="fixed inset-0 h-[100dvh] w-full overflow-hidden bg-[var(--bg-page)]">
       <GoogleMap
         mapId="DEMO_MAP_ID"
-        colorScheme="DARK"
+        colorScheme={isDarkMode ? 'DARK' : 'LIGHT'}
         defaultCenter={{lat: 48.8566, lng: 2.3522}}
         defaultZoom={12}
         gestureHandling="greedy"
@@ -335,6 +345,7 @@ export const AperoMap: React.FC<AperoMapProps> = ({
           centerPoint={centerPoint}
           effectiveSearchCenter={effectiveSearchCenter}
           bars={bars}
+          sheetSnap={sheetSnap}
         />
 
         <MapRadiusOverlays
@@ -342,7 +353,7 @@ export const AperoMap: React.FC<AperoMapProps> = ({
           excludedZones={excludedZones}
         />
 
-        {/* Minimalist Friend Markers (colored initial circles) */}
+        {/* Minimalist Friend Markers */}
         {participants.map((p, index) => {
           const avatarClass = PARTICIPANT_AVATARS[index % PARTICIPANT_AVATARS.length];
           const initial = p.name.trim().charAt(0).toUpperCase() || '?';
@@ -384,7 +395,7 @@ export const AperoMap: React.FC<AperoMapProps> = ({
           </AdvancedMarker>
         )}
 
-        {/* Luminous Shifted Search Pin (when spiral fallback triggered) */}
+        {/* Shifted Search Pin */}
         {isShifted && effectiveSearchCenter && (
           <AdvancedMarker
             position={effectiveSearchCenter}
@@ -400,7 +411,7 @@ export const AperoMap: React.FC<AperoMapProps> = ({
           </AdvancedMarker>
         )}
 
-        {/* Minimal Bar Pill Markers */}
+        {/* Bar Pill Markers */}
         {bars.map((bar) => (
           <BarMarker
             key={bar.id}
@@ -415,23 +426,17 @@ export const AperoMap: React.FC<AperoMapProps> = ({
         ))}
       </GoogleMap>
 
-      {/* Expand/collapse toggle on mobile */}
-      <button
-        type="button"
-        onClick={() => setIsExpanded((prev) => !prev)}
-        aria-label={isExpanded ? 'Réduire la carte' : 'Agrandir la carte'}
-        className="lg:hidden absolute top-3 right-3 z-10 inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 bg-black/75 text-white shadow-lg backdrop-blur-xl hover:bg-black/90"
-      >
-        {isExpanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-      </button>
-
-      {/* Minimal frosted legend */}
-      <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-2 rounded-full border border-white/10 bg-black/75 px-3 py-1.5 text-[11px] font-medium text-[#8E8E93] backdrop-blur-xl">
-        <span className="text-white/90">{participants.length} ami{participants.length > 1 ? 's' : ''}</span>
+      {/* Subtle frosted legend on desktop */}
+      <div className="pointer-events-none hidden lg:flex fixed bottom-4 right-4 z-10 items-center gap-2 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-card-strong)] px-3.5 py-1.5 text-[11px] font-medium text-[var(--text-secondary)] backdrop-blur-xl shadow-lg">
+        <span className="text-[var(--text-primary)]">
+          {participants.length} ami{participants.length > 1 ? 's' : ''}
+        </span>
         <span aria-hidden="true">·</span>
         <span className="text-[#0A84FF]">QG 800m</span>
         <span aria-hidden="true">·</span>
-        <span className="text-[#FF9F0A] tabular-nums">{bars.length} bar{bars.length > 1 ? 's' : ''}</span>
+        <span className="text-[#FF9F0A] tabular-nums">
+          {bars.length} bar{bars.length > 1 ? 's' : ''}
+        </span>
       </div>
     </div>
   );

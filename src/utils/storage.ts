@@ -4,14 +4,22 @@ import type {
   ExcludedZones,
   Participant,
   SavedFavoriteAddress,
+  SavedPlaceSpot,
+  SavedSessionRecord,
   SessionState,
+  ThemeMode,
   TransportMode,
   UserPrefs,
+  UserProfile,
 } from '../types/apero';
 
 const USER_PREFS_KEY = 'aperocentral_user_prefs';
 const FAVORITES_KEY = 'aperocentral_saved_places';
 const GMAPS_KEY_STORAGE = 'aperocentral_gmaps_key';
+const USER_PROFILE_KEY = 'apero_user_profile';
+const SESSIONS_LIST_KEY = 'apero_sessions_list';
+const ACTIVE_SESSION_ID_KEY = 'apero_active_session_id';
+const THEME_MODE_KEY = 'apero_theme_mode';
 
 function getDefaultDateTimeLocal(): string {
   const now = new Date();
@@ -23,12 +31,16 @@ function getDefaultDateTimeLocal(): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
 }
 
-const INITIAL_DEFAULT_DATETIME = getDefaultDateTimeLocal();
+export const INITIAL_DEFAULT_DATETIME = getDefaultDateTimeLocal();
+
+export function createSessionId(): string {
+  return `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
 
 export function createDefaultSession(): SessionState {
   return {
     title: 'Apéro de la Team',
-    dateTime: INITIAL_DEFAULT_DATETIME,
+    dateTime: getDefaultDateTimeLocal(),
     participants: [],
     excludedZones: {
       postalCodes: [],
@@ -114,7 +126,7 @@ function sanitizeExcludedZones(raw: unknown): ExcludedZones {
   return {postalCodes, postalCodeLabels, customZones};
 }
 
-function sanitizeSession(raw: unknown): SessionState | null {
+export function sanitizeSession(raw: unknown): SessionState | null {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Record<string, unknown>;
 
@@ -202,19 +214,23 @@ export function buildShareUrl(session: SessionState): string {
   return url.toString();
 }
 
-export function syncSessionToUrl(session: SessionState): string {
-  const url = new URL(window.location.href);
+export function isSessionEffectivelyDefault(session: SessionState): boolean {
   const hasExclusions =
     session.excludedZones.postalCodes.length > 0 ||
     session.excludedZones.customZones.length > 0;
-  if (
+  return (
     session.participants.length === 0 &&
     !hasExclusions &&
     Object.keys(session.votes).length === 0 &&
     Object.keys(session.customPrices).length === 0 &&
     session.title === 'Apéro de la Team' &&
     session.dateTime === INITIAL_DEFAULT_DATETIME
-  ) {
+  );
+}
+
+export function syncSessionToUrl(session: SessionState): string {
+  const url = new URL(window.location.href);
+  if (isSessionEffectivelyDefault(session)) {
     url.searchParams.delete('s');
   } else {
     url.searchParams.set('s', encodeSessionToUrlParam(session));
@@ -281,6 +297,159 @@ export function loadFavoriteAddresses(): SavedFavoriteAddress[] {
 export function saveFavoriteAddresses(favorites: SavedFavoriteAddress[]): void {
   try {
     localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function sanitizePlaceSpot(raw: unknown): SavedPlaceSpot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const spot = raw as Record<string, unknown>;
+  if (
+    typeof spot.address === 'string' &&
+    spot.address.trim().length > 0 &&
+    typeof spot.lat === 'number' &&
+    Number.isFinite(spot.lat) &&
+    typeof spot.lng === 'number' &&
+    Number.isFinite(spot.lng) &&
+    (spot.lat !== 0 || spot.lng !== 0)
+  ) {
+    return {
+      address: spot.address.trim(),
+      lat: spot.lat,
+      lng: spot.lng,
+    };
+  }
+  return null;
+}
+
+export function loadUserProfile(): UserProfile {
+  try {
+    const raw = localStorage.getItem(USER_PROFILE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      return {
+        name: typeof parsed.name === 'string' ? parsed.name.trim() : '',
+        home: sanitizePlaceSpot(parsed.home),
+        work: sanitizePlaceSpot(parsed.work),
+        preferredMode: isValidMode(parsed.preferredMode) ? parsed.preferredMode : 'TRANSIT',
+      };
+    }
+  } catch {
+    // Fallback below
+  }
+
+  // Seed gracefully from legacy prefs / saved places if present
+  const legacyPrefs = loadUserPrefs();
+  const legacyFavs = loadFavoriteAddresses();
+  const homeFav = legacyFavs.find((f) => f.label.toLowerCase() === 'maison');
+  const workFav = legacyFavs.find((f) => f.label.toLowerCase() === 'travail');
+
+  return {
+    name: legacyPrefs?.name || '',
+    home: homeFav ? {address: homeFav.address, lat: homeFav.lat, lng: homeFav.lng} : null,
+    work: workFav ? {address: workFav.address, lat: workFav.lat, lng: workFav.lng} : null,
+    preferredMode: legacyPrefs?.mode || 'TRANSIT',
+  };
+}
+
+export function saveUserProfile(profile: UserProfile): void {
+  try {
+    localStorage.setItem(USER_PROFILE_KEY, JSON.stringify(profile));
+    if (profile.name.trim() && (profile.home || profile.work)) {
+      const spot = profile.home || profile.work!;
+      saveUserPrefs({
+        name: profile.name.trim(),
+        address: spot.address,
+        lat: spot.lat,
+        lng: spot.lng,
+        mode: profile.preferredMode,
+      });
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function loadSessionsList(): SavedSessionRecord[] {
+  try {
+    const raw = localStorage.getItem(SESSIONS_LIST_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const records: SavedSessionRecord[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const obj = item as Record<string, unknown>;
+      const session = sanitizeSession(obj.session);
+      if (typeof obj.id === 'string' && obj.id && session) {
+        records.push({
+          id: obj.id,
+          updatedAt: typeof obj.updatedAt === 'number' && Number.isFinite(obj.updatedAt) ? obj.updatedAt : Date.now(),
+          session,
+        });
+      }
+    }
+    return records.sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch {
+    return [];
+  }
+}
+
+export function saveSessionsList(records: SavedSessionRecord[]): void {
+  try {
+    const trimmed = [...records].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 25);
+    localStorage.setItem(SESSIONS_LIST_KEY, JSON.stringify(trimmed));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function upsertSessionRecord(id: string, session: SessionState): SavedSessionRecord[] {
+  const existing = loadSessionsList();
+  const next: SavedSessionRecord[] = [
+    {id, updatedAt: Date.now(), session},
+    ...existing.filter((r) => r.id !== id),
+  ];
+  saveSessionsList(next);
+  return next;
+}
+
+export function deleteSessionRecord(id: string): SavedSessionRecord[] {
+  const existing = loadSessionsList();
+  const next = existing.filter((r) => r.id !== id);
+  saveSessionsList(next);
+  return next;
+}
+
+export function loadActiveSessionId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_SESSION_ID_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveActiveSessionId(id: string): void {
+  try {
+    localStorage.setItem(ACTIVE_SESSION_ID_KEY, id);
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function loadThemeMode(): ThemeMode {
+  try {
+    const raw = localStorage.getItem(THEME_MODE_KEY);
+    return raw === 'light' ? 'light' : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+export function saveThemeMode(mode: ThemeMode): void {
+  try {
+    localStorage.setItem(THEME_MODE_KEY, mode);
   } catch {
     // Ignore storage quota errors
   }

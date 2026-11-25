@@ -3,6 +3,7 @@ import type {
   ExcludedZones,
   OpeningPeriodLite,
   Participant,
+  RouteStepDetail,
   SessionState,
   TransportMode,
   TravelTimeInfo,
@@ -38,13 +39,111 @@ export const PARIS_ARRONDISSEMENTS: ParisArrondissement[] = [
   {code: '75020', shortLabel: '20e', lat: 48.8634, lng: 2.4008},
 ];
 
+const ALLOWED_BAR_PRIMARY_TYPES = new Set([
+  'bar',
+  'pub',
+  'wine_bar',
+  'cocktail_bar',
+  'bar_and_grill',
+  'beer_garden',
+  'brewpub',
+  'brewery',
+  'gastropub',
+  'brasserie',
+  'cafe',
+]);
+
+const REJECTED_CORPORATE_TYPES = new Set([
+  'corporate_office',
+  'real_estate_agency',
+  'travel_agency',
+  'insurance_agency',
+  'lawyer',
+  'accounting',
+  'finance',
+  'consultant',
+  'consulting',
+  'local_government_office',
+  'bank',
+  'atm',
+  'post_office',
+  'school',
+  'university',
+  'hospital',
+  'doctor',
+  'pharmacy',
+  'supermarket',
+  'grocery_store',
+  'convenience_store',
+  'department_store',
+  'clothing_store',
+  'electronics_store',
+  'hardware_store',
+  'car_dealer',
+  'car_repair',
+  'coworking_space',
+  'gym',
+  'fitness_center',
+  'lodging',
+  'hotel',
+]);
+
+const REJECTED_NAME_REGEX =
+  /\b(sarl|sas|sasu|eurl|sci|agence|cabinet|bureau|bureaux|coworking|holding|consulting|conseil|immobili[eè]re?|assurance|assurances|banque|si[eè]ge\s+social|entreprise|soci[eé]t[eé]|comptable|avocat|notaire|int[eé]rim|recrutement|showroom|supermarch[eé]|carrefour|monoprix|franprix|auch[ae]n|leclerc)\b/i;
+
+const AU_BUREAU_EXCEPTION_REGEX = /\bau\s+bureau\b/i;
+
+/**
+ * Strict double filter:
+ * 1) primaryType must be a bar/pub/brasserie/cafe (or legacy types include bar/pub when primaryType is absent)
+ * 2) Reject corporate offices, agencies, stores, or company-like names (preserving "Au Bureau" pubs)
+ */
+export function isRealBarPlace(
+  name: string,
+  primaryType?: string | null,
+  types?: string[] | null
+): boolean {
+  const normalizedPrimary = (primaryType || '').toLowerCase().trim();
+  const normalizedTypes = Array.isArray(types) ? types.map((t) => t.toLowerCase().trim()) : [];
+
+  if (normalizedPrimary) {
+    if (!ALLOWED_BAR_PRIMARY_TYPES.has(normalizedPrimary)) {
+      return false;
+    }
+  } else if (normalizedTypes.length > 0) {
+    const hasBarType = normalizedTypes.some((t) => ALLOWED_BAR_PRIMARY_TYPES.has(t));
+    if (!hasBarType) return false;
+  }
+
+  if (normalizedTypes.some((t) => REJECTED_CORPORATE_TYPES.has(t))) {
+    return false;
+  }
+
+  const trimmedName = (name || '').trim();
+  if (!trimmedName) return false;
+
+  if (REJECTED_NAME_REGEX.test(trimmedName)) {
+    const isAuBureauPub =
+      AU_BUREAU_EXCEPTION_REGEX.test(trimmedName) &&
+      (normalizedPrimary === 'bar' ||
+        normalizedPrimary === 'pub' ||
+        normalizedPrimary === 'brasserie' ||
+        normalizedTypes.includes('bar'));
+    if (!isAuBureauPub) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 // Typical urban speeds in meters/min.
 // To equalize travel *time*, slower modes get higher spatial weight (1 / speed).
 const MODE_SPEED_MPM: Record<TransportMode, number> = {
-  WALKING: 80,    // ~4.8 km/h
+  WALKING: 80, // ~4.8 km/h
   BICYCLING: 240, // ~14.4 km/h
-  TRANSIT: 330,   // ~19.8 km/h
-  DRIVING: 420,   // ~25.2 km/h urban traffic
+  TRANSIT: 330, // ~19.8 km/h
+  DRIVING: 420, // ~25.2 km/h urban traffic
 };
 
 export function calculateWeightedBarycenter(
@@ -188,7 +287,6 @@ export function isPointInExcludedZones(
     }
   }
 
-  // Fallback spatial check when postalCode is absent (e.g. spiral center point check)
   if (!postalCode && excludedCodes.length > 0) {
     if (lat >= 48.81 && lat <= 48.91 && lng >= 2.22 && lng <= 2.47) {
       let nearestArr: ParisArrondissement | null = null;
@@ -231,10 +329,6 @@ export interface SpiralSearchPoint {
   isPointExcluded: boolean;
 }
 
-/**
- * Generates the 8 cardinal/intercardinal points at a given radius around the origin barycenter,
- * ordered to prioritize points outside excluded zones and closest to the participants.
- */
 export function buildSpiralPointsForRadius(
   originCenter: {lat: number; lng: number},
   radiusMeters: number,
@@ -267,20 +361,6 @@ export function buildSpiralPointsForRadius(
   });
 
   return points;
-}
-
-export function computeBearingDegrees(
-  from: {lat: number; lng: number},
-  to: {lat: number; lng: number}
-): number {
-  const lat1 = (from.lat * Math.PI) / 180;
-  const lat2 = (to.lat * Math.PI) / 180;
-  const dLng = ((to.lng - from.lng) * Math.PI) / 180;
-  const y = Math.sin(dLng) * Math.cos(lat2);
-  const x =
-    Math.cos(lat1) * Math.sin(lat2) -
-    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
-  return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
 export function evaluateOpeningStatus(
@@ -346,6 +426,13 @@ export function formatDuration(seconds: number): string {
   return rem === 0 ? `${hours} h` : `${hours} h ${String(rem).padStart(2, '0')}`;
 }
 
+export function formatDistanceKm(meters: number): string {
+  if (meters < 1000) {
+    return `${Math.round(meters)} m`;
+  }
+  return `${(meters / 1000).toFixed(1).replace('.', ',')} km`;
+}
+
 export function getModeLabel(mode: TransportMode): string {
   switch (mode) {
     case 'TRANSIT':
@@ -401,6 +488,47 @@ export function formatTransitLineBadge(
 
   const name = (fullName || '').trim();
   return name ? name.slice(0, 12) : null;
+}
+
+export function buildRouteSummary(
+  mode: TransportMode,
+  steps: RouteStepDetail[],
+  distanceMeters: number
+): string {
+  if (mode === 'TRANSIT') {
+    const transitTokens: string[] = [];
+    let walkSeconds = 0;
+
+    for (const s of steps) {
+      if (s.kind === 'TRANSIT' && s.lineBadge) {
+        if (transitTokens[transitTokens.length - 1] !== s.lineBadge) {
+          transitTokens.push(s.lineBadge);
+        }
+      } else if (s.kind === 'WALKING' && typeof s.durationSeconds === 'number') {
+        walkSeconds += s.durationSeconds;
+      }
+    }
+
+    const walkMins = Math.round(walkSeconds / 60);
+    if (transitTokens.length > 0) {
+      if (walkMins >= 1) {
+        return `${transitTokens.join(' + ')} + ${walkMins} min à pied`;
+      }
+      return transitTokens.join(' + ');
+    }
+    if (walkMins >= 1) {
+      return `${walkMins} min à pied`;
+    }
+    return formatDistanceKm(distanceMeters);
+  }
+
+  if (mode === 'BICYCLING') {
+    return `${formatDistanceKm(distanceMeters)} à vélo`;
+  }
+  if (mode === 'WALKING') {
+    return `${formatDistanceKm(distanceMeters)} à pied`;
+  }
+  return `${formatDistanceKm(distanceMeters)} en voiture`;
 }
 
 export function buildWhatsAppUrl(text: string): string {
@@ -459,7 +587,9 @@ export function formatPriceLevel(priceLevel: string | number | null | undefined)
   return {label: '€€€', tier: 'expensive', numericRank: numeric};
 }
 
-export function buildGoogleMapsUrl(bar: Pick<BarCandidate, 'id' | 'lat' | 'lng' | 'googleMapsURI' | 'name'>): string {
+export function buildGoogleMapsUrl(
+  bar: Pick<BarCandidate, 'id' | 'lat' | 'lng' | 'googleMapsURI' | 'name'>
+): string {
   if (bar.googleMapsURI) return bar.googleMapsURI;
   const query = encodeURIComponent(`${bar.name}`);
   return `https://www.google.com/maps/search/?api=1&query=${bar.lat},${bar.lng}&query_place_id=${encodeURIComponent(bar.id)}&q=${query}`;
@@ -499,8 +629,12 @@ export function buildMessengerRecapText(
   const participantLines = session.participants.map((p) => {
     const t = travelTimesByParticipant[p.id];
     const durationStr = t ? formatDuration(t.durationSeconds) : 'N/C';
-    const lineTag = t?.transitLine ? ` [${t.transitLine}]` : '';
-    return `• ${p.name} (${getModeLabel(p.mode)}) : ${durationStr}${lineTag}`;
+    const detailTag = t?.routeSummary
+      ? ` (${t.routeSummary})`
+      : t?.transitLine
+      ? ` [${t.transitLine}]`
+      : '';
+    return `• ${p.name} (${getModeLabel(p.mode)}) : ${durationStr}${detailTag}`;
   });
 
   const gmapsUrl = buildGoogleMapsUrl(bar);
@@ -598,3 +732,20 @@ export function downloadIcsFile(session: SessionState, bar: BarCandidate): void 
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+export function isAddressMatchingSpot(
+  addressText: string,
+  coords: {lat: number; lng: number} | null | undefined,
+  spot: {address: string; lat: number; lng: number} | null | undefined
+): boolean {
+  if (!spot) return false;
+  const normalizedCurrent = addressText.trim().toLowerCase();
+  const normalizedSpot = spot.address.trim().toLowerCase();
+  if (!normalizedCurrent || !normalizedSpot) return false;
+  if (normalizedCurrent !== normalizedSpot) return false;
+  if (coords) {
+    return haversineDistanceMeters(coords, spot) < 50;
+  }
+  return true;
+}
+

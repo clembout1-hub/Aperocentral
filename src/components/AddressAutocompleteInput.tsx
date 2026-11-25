@@ -163,7 +163,7 @@ export const AddressAutocompleteInput: React.FC<AddressAutocompleteInputProps> =
       <div className="relative flex items-center">
         <MapPin
           className={`pointer-events-none absolute left-3 h-4 w-4 ${
-            isSelectedCoordsValid ? 'text-[#30D158]' : 'text-[#8E8E93]'
+            isSelectedCoordsValid ? 'text-[#30D158]' : 'text-[var(--text-secondary)]'
           }`}
           aria-hidden="true"
         />
@@ -181,10 +181,10 @@ export const AddressAutocompleteInput: React.FC<AddressAutocompleteInputProps> =
           }}
           placeholder={placeholder}
           autoComplete="off"
-          className={`min-h-[44px] w-full rounded-xl border bg-[#2C2C2E]/70 pl-9 pr-10 py-2.5 text-sm text-white placeholder:text-[#8E8E93] focus:outline-none transition-colors ${
+          className={`min-h-[44px] w-full rounded-xl border bg-[var(--bg-input)] pl-9 pr-10 py-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:outline-none transition-colors ${
             isSelectedCoordsValid
               ? 'border-[#30D158]/50 focus:border-[#30D158]'
-              : 'border-white/10 focus:border-[#0A84FF]'
+              : 'border-[var(--border-subtle)] focus:border-[#0A84FF]'
           }`}
         />
         {isLoading ? (
@@ -203,7 +203,7 @@ export const AddressAutocompleteInput: React.FC<AddressAutocompleteInputProps> =
                 setIsOpen(false);
               }}
               aria-label="Effacer l'adresse"
-              className="absolute right-1.5 inline-flex h-8 w-8 items-center justify-center rounded-full text-[#8E8E93] hover:bg-white/10 hover:text-white"
+              className="absolute right-1.5 inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
             >
               <X className="h-3.5 w-3.5" />
             </button>
@@ -211,35 +211,40 @@ export const AddressAutocompleteInput: React.FC<AddressAutocompleteInputProps> =
         )}
       </div>
 
-      {isOpen && (suggestions.length > 0 || fetchError || (!isLoading && value.trim().length >= 2 && !isSelectedCoordsValid)) && (
-        <ul
-          role="listbox"
-          className="absolute left-0 right-0 z-50 mt-1.5 max-h-60 overflow-y-auto rounded-2xl border border-white/15 bg-[#1C1C1E]/95 py-1 shadow-2xl backdrop-blur-2xl"
-        >
-          {fetchError ? (
-            <li className="px-3.5 py-2.5 text-xs text-[#FF453A]">{fetchError}</li>
-          ) : suggestions.length === 0 ? (
-            <li className="px-3.5 py-2.5 text-xs text-[#8E8E93]">Aucune suggestion trouvée.</li>
-          ) : (
-            suggestions.map((suggestion, index) => {
-              const label = suggestion.placePrediction?.text.text;
-              if (!label) return null;
-              return (
-                <li key={suggestion.placePrediction?.placeId || index}>
-                  <button
-                    type="button"
-                    onClick={() => void handleSelectSuggestion(suggestion)}
-                    className="flex min-h-[44px] w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-white/90 transition-colors hover:bg-[#0A84FF]/20 hover:text-white"
-                  >
-                    <MapPin className="h-4 w-4 shrink-0 text-[#0A84FF]" aria-hidden="true" />
-                    <span className="line-clamp-2">{label}</span>
-                  </button>
-                </li>
-              );
-            })
-          )}
-        </ul>
-      )}
+      {isOpen &&
+        (suggestions.length > 0 ||
+          fetchError ||
+          (!isLoading && value.trim().length >= 2 && !isSelectedCoordsValid)) && (
+          <ul
+            role="listbox"
+            className="absolute left-0 right-0 z-50 mt-1.5 max-h-60 overflow-y-auto rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card-strong)] py-1 shadow-2xl backdrop-blur-2xl"
+          >
+            {fetchError ? (
+              <li className="px-3.5 py-2.5 text-xs text-[#FF453A]">{fetchError}</li>
+            ) : suggestions.length === 0 ? (
+              <li className="px-3.5 py-2.5 text-xs text-[var(--text-secondary)]">
+                Aucune suggestion trouvée.
+              </li>
+            ) : (
+              suggestions.map((suggestion, index) => {
+                const label = suggestion.placePrediction?.text.text;
+                if (!label) return null;
+                return (
+                  <li key={suggestion.placePrediction?.placeId || index}>
+                    <button
+                      type="button"
+                      onClick={() => void handleSelectSuggestion(suggestion)}
+                      className="flex min-h-[44px] w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-sm text-[var(--text-primary)] transition-colors hover:bg-[#0A84FF]/15"
+                    >
+                      <MapPin className="h-4 w-4 shrink-0 text-[#0A84FF]" aria-hidden="true" />
+                      <span className="line-clamp-2">{label}</span>
+                    </button>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        )}
     </div>
   );
 };

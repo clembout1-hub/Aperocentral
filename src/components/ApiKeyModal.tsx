@@ -40,22 +40,25 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-md p-4"
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[var(--bg-backdrop)] backdrop-blur-md p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="api-key-modal-title"
     >
-      <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#1C1C1E]/95 p-5 shadow-2xl backdrop-blur-2xl">
+      <div className="w-full max-w-md rounded-3xl border border-[var(--border-subtle)] bg-[var(--bg-card-strong)] p-5 shadow-2xl backdrop-blur-2xl">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[#0A84FF]/15 text-[#0A84FF]">
               <KeyRound className="h-4 w-4" aria-hidden="true" />
             </div>
             <div>
-              <h2 id="api-key-modal-title" className="text-base font-semibold tracking-tight text-white">
+              <h2
+                id="api-key-modal-title"
+                className="text-base font-semibold tracking-tight text-[var(--text-primary)]"
+              >
                 Clé Google Maps Platform
               </h2>
-              <p className="text-xs text-[#8E8E93]">
+              <p className="text-xs text-[var(--text-secondary)]">
                 Stockée uniquement dans le navigateur (localStorage)
               </p>
             </div>
@@ -64,7 +67,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Fermer les paramètres"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-[#2C2C2E] text-[#8E8E93] hover:text-white"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
           >
             <X className="h-4 w-4" />
           </button>
@@ -72,7 +75,10 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           <div>
-            <label htmlFor="gmaps-api-key-input" className="block text-xs font-medium text-[#8E8E93]">
+            <label
+              htmlFor="gmaps-api-key-input"
+              className="block text-xs font-medium text-[var(--text-secondary)]"
+            >
               Clé API personnalisée (Maps JS, Places New, Routes)
             </label>
             <input
@@ -82,7 +88,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               value={draftKey}
               onChange={(e) => setDraftKey(e.target.value)}
               placeholder={envApiKeyPresent ? 'Clé par défaut active (saisir pour remplacer)' : 'AIzaSy...'}
-              className="mt-1.5 min-h-[44px] w-full rounded-xl border border-white/10 bg-[#2C2C2E]/75 px-3.5 py-2.5 font-mono text-sm text-white placeholder:text-[#8E8E93] focus:border-[#0A84FF] focus:outline-none"
+              className="mt-1.5 min-h-[44px] w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-input)] px-3.5 py-2.5 font-mono text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:border-[#0A84FF] focus:outline-none"
             />
             {envApiKeyPresent && !customApiKey && (
               <p className="mt-1.5 text-xs text-[#30D158]">
@@ -91,7 +97,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
             )}
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-[#2C2C2E]/40 p-3 text-xs leading-relaxed text-[#8E8E93]">
+          <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 text-xs leading-relaxed text-[var(--text-secondary)]">
             Pour sécuriser votre clé en production, restreignez-la par référent HTTP et aux API autorisées via{' '}
             <a
               href="https://docs.cloud.google.com/api-keys/docs/add-restrictions-api-keys?utm_campaign=gmp_mcp_codeassist_v1_aistudio"
@@ -123,7 +129,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="min-h-[42px] rounded-full border border-white/10 bg-[#2C2C2E] px-4 py-2 text-sm font-medium text-white hover:bg-[#3A3A3C]"
+                className="min-h-[42px] rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-surface-hover)]"
               >
                 Annuler
               </button>

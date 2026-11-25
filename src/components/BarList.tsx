@@ -3,22 +3,28 @@ import {
   Beer,
   CalendarPlus,
   Check,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Compass,
   ExternalLink,
+  Footprints,
   Loader2,
   MapPin,
   Navigation,
+  Route,
   Search,
   Star,
   Tag,
   ThumbsUp,
+  TrainFront,
   Trophy,
 } from 'lucide-react';
 import type {BarCandidate, Participant, SortCriterion, TravelTimeInfo} from '../types/apero';
 import {
   buildCitymapperUrl,
   buildGoogleMapsUrl,
+  formatDistanceKm,
   formatDuration,
   formatPriceLevel,
   getModeEmoji,
@@ -38,14 +44,18 @@ interface BarListProps {
   winningBarId: string | null;
   sortBy: SortCriterion;
   onlyCheap: boolean;
+  onlyTopRated: boolean;
   onlyOpen: boolean;
   isLoadingBars: boolean;
   isLoadingRoutes: boolean;
   hasSearchedOnce: boolean;
   barsError: string | null;
   shiftNotice: string | null;
+  registerBarRef?: (barId: string, el: HTMLElement | null) => void;
   onChangeSort: (sort: SortCriterion) => void;
+  onSelectAllFilter: () => void;
   onToggleCheapFilter: () => void;
+  onToggleTopRatedFilter: () => void;
   onToggleOpenFilter: () => void;
   onResetFilters: () => void;
   onSelectBar: (barId: string) => void;
@@ -68,14 +78,18 @@ export const BarList: React.FC<BarListProps> = ({
   winningBarId,
   sortBy,
   onlyCheap,
+  onlyTopRated,
   onlyOpen,
   isLoadingBars,
   isLoadingRoutes,
   hasSearchedOnce,
   barsError,
   shiftNotice,
+  registerBarRef,
   onChangeSort,
+  onSelectAllFilter,
   onToggleCheapFilter,
+  onToggleTopRatedFilter,
   onToggleOpenFilter,
   onResetFilters,
   onSelectBar,
@@ -85,23 +99,29 @@ export const BarList: React.FC<BarListProps> = ({
 }) => {
   const voterKey = activeUserName.trim() || participants[0]?.name || 'Moi';
   const [openNavBarId, setOpenNavBarId] = useState<string | null>(null);
+  const [openStepsBarId, setOpenStepsBarId] = useState<string | null>(null);
+
+  const isAllActive = !onlyCheap && !onlyTopRated && !onlyOpen;
 
   return (
     <section aria-labelledby="bars-heading" className="space-y-3">
       {/* Section Header & Segmented Sort */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 id="bars-heading" className="text-base font-semibold tracking-tight text-white">
-            Bars autour du QG
+          <h2
+            id="bars-heading"
+            className="text-base font-semibold tracking-tight text-[var(--text-primary)]"
+          >
+            Top {Math.max(8, totalBarsBeforeFilter || 8)} bars autour du QG
           </h2>
-          <p className="text-xs text-[#8E8E93]">
+          <p className="text-xs text-[var(--text-secondary)]">
             {isLoadingRoutes
-              ? 'Calcul des trajets & lignes métro…'
-              : 'Classés par équité des temps de trajet'}
+              ? 'Calcul porte-à-porte Google Routes…'
+              : 'Classés par équité des trajets et note'}
           </p>
         </div>
 
-        <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-[#1C1C1E]/90 p-1">
+        <div className="flex items-center gap-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-1">
           {(
             [
               {id: 'fairness', label: 'Équité'},
@@ -116,7 +136,7 @@ export const BarList: React.FC<BarListProps> = ({
               className={`min-h-[34px] rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
                 sortBy === option.id
                   ? 'bg-[#0A84FF] text-white'
-                  : 'text-[#8E8E93] hover:text-white'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
               }`}
             >
               {option.label}
@@ -125,8 +145,21 @@ export const BarList: React.FC<BarListProps> = ({
         </div>
       </div>
 
-      {/* Filter Pills */}
+      {/* Filter Pills: Tous (8), Pas cher (€), Top notes (4.3+), Ouvert */}
       <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={onSelectAllFilter}
+          aria-pressed={isAllActive}
+          className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap tabular-nums ${
+            isAllActive
+              ? 'border-[#0A84FF]/60 bg-[#0A84FF]/15 text-[#0A84FF]'
+              : 'border-[var(--border-subtle)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]'
+          }`}
+        >
+          <span>Tous ({totalBarsBeforeFilter || 8})</span>
+        </button>
+
         <button
           type="button"
           onClick={onToggleCheapFilter}
@@ -134,7 +167,7 @@ export const BarList: React.FC<BarListProps> = ({
           className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
             onlyCheap
               ? 'border-[#30D158]/50 bg-[#30D158]/15 text-[#30D158]'
-              : 'border-white/10 bg-[#1C1C1E]/75 text-white/80 hover:border-white/25 hover:text-white'
+              : 'border-[var(--border-subtle)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]'
           }`}
         >
           <Tag className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -143,31 +176,45 @@ export const BarList: React.FC<BarListProps> = ({
 
         <button
           type="button"
+          onClick={onToggleTopRatedFilter}
+          aria-pressed={onlyTopRated}
+          className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+            onlyTopRated
+              ? 'border-[#FF9F0A]/50 bg-[#FF9F0A]/15 text-[#FF9F0A]'
+              : 'border-[var(--border-subtle)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]'
+          }`}
+        >
+          <Star className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>Top notes (4.3+)</span>
+        </button>
+
+        <button
+          type="button"
           onClick={onToggleOpenFilter}
           aria-pressed={onlyOpen}
           className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
             onlyOpen
-              ? 'border-[#FF9F0A]/50 bg-[#FF9F0A]/15 text-[#FF9F0A]'
-              : 'border-white/10 bg-[#1C1C1E]/75 text-white/80 hover:border-white/25 hover:text-white'
+              ? 'border-[#30D158]/50 bg-[#30D158]/15 text-[#30D158]'
+              : 'border-[var(--border-subtle)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]'
           }`}
         >
           <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          <span>Ouvert maintenant / tard</span>
+          <span>Ouvert</span>
         </button>
       </div>
 
       {/* Spiral Fallback Notice */}
       {shiftNotice && (
-        <div className="flex items-start gap-2 rounded-2xl border border-[#0A84FF]/30 bg-[#0A84FF]/10 px-3.5 py-2.5 text-xs text-[#64D2FF]">
-          <Compass className="mt-0.5 h-4 w-4 shrink-0 text-[#0A84FF]" aria-hidden="true" />
+        <div className="flex items-start gap-2 rounded-2xl border border-[#0A84FF]/30 bg-[#0A84FF]/10 px-3.5 py-2.5 text-xs text-[#0A84FF]">
+          <Compass className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
           <span>{shiftNotice}</span>
         </div>
       )}
 
       {isLoadingBars && (
-        <div className="flex items-center justify-center gap-2.5 rounded-2xl border border-white/10 bg-[#1C1C1E]/75 py-10 text-sm text-[#8E8E93] backdrop-blur-xl">
+        <div className="flex items-center justify-center gap-2.5 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] py-10 text-sm text-[var(--text-secondary)] backdrop-blur-xl">
           <Loader2 className="h-5 w-5 animate-spin text-[#0A84FF]" aria-hidden="true" />
-          <span>Recherche des bars autour du QG…</span>
+          <span>Recherche des vrais bars autour du QG…</span>
         </div>
       )}
 
@@ -181,38 +228,46 @@ export const BarList: React.FC<BarListProps> = ({
       )}
 
       {!isLoadingBars && !barsError && participants.length === 0 && (
-        <div className="rounded-2xl border border-white/10 bg-[#1C1C1E]/75 p-6 text-center backdrop-blur-xl">
+        <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-6 text-center backdrop-blur-xl">
           <Beer className="mx-auto h-8 w-8 text-[#FF9F0A]" aria-hidden="true" />
-          <p className="mt-2 text-sm font-semibold text-white">
-            Ajoute les participants ci-dessus
+          <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">
+            Ajoute les participants dans l&apos;onglet Participants
           </p>
-          <p className="mt-1 text-xs text-[#8E8E93]">
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">
             Puis touche « Trouver le QG idéal » pour lancer le calcul.
           </p>
         </div>
       )}
 
-      {!isLoadingBars && !barsError && participants.length > 0 && !hasSearchedOnce && bars.length === 0 && (
-        <div className="rounded-2xl border border-white/10 bg-[#1C1C1E]/75 p-6 text-center backdrop-blur-xl">
-          <Search className="mx-auto h-7 w-7 text-[#0A84FF]" aria-hidden="true" />
-          <p className="mt-2 text-sm font-semibold text-white">
-            Prêt à calculer le point de rendez-vous
-          </p>
-          <p className="mt-1 text-xs text-[#8E8E93]">
-            Appuie sur « Trouver le QG idéal » quand le groupe est prêt.
-          </p>
-        </div>
-      )}
+      {!isLoadingBars &&
+        !barsError &&
+        participants.length > 0 &&
+        !hasSearchedOnce &&
+        bars.length === 0 && (
+          <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-6 text-center backdrop-blur-xl">
+            <Search className="mx-auto h-7 w-7 text-[#0A84FF]" aria-hidden="true" />
+            <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">
+              Prêt à calculer le point de rendez-vous
+            </p>
+            <p className="mt-1 text-xs text-[var(--text-secondary)]">
+              Appuie sur « Trouver le QG idéal » quand le groupe est prêt.
+            </p>
+          </div>
+        )}
 
-      {!isLoadingBars && !barsError && participants.length > 0 && hasSearchedOnce && totalBarsBeforeFilter === 0 && (
-        <div className="rounded-2xl border border-white/10 bg-[#1C1C1E]/75 p-6 text-center text-sm text-[#8E8E93]">
-          Aucun bar disponible hors des zones exclues. Essaie de réautoriser un quartier ou d&apos;ajuster les départs.
-        </div>
-      )}
+      {!isLoadingBars &&
+        !barsError &&
+        participants.length > 0 &&
+        hasSearchedOnce &&
+        totalBarsBeforeFilter === 0 && (
+          <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-6 text-center text-sm text-[var(--text-secondary)]">
+            Aucun bar disponible hors des zones exclues. Essaie de réautoriser un quartier ou d&apos;ajuster les départs.
+          </div>
+        )}
 
       {!isLoadingBars && !barsError && totalBarsBeforeFilter > 0 && bars.length === 0 && (
-        <div className="rounded-2xl border border-white/10 bg-[#1C1C1E]/75 p-6 text-center backdrop-blur-xl">
-          <p className="text-sm text-[#8E8E93]">
+        <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-6 text-center backdrop-blur-xl">
+          <p className="text-sm text-[var(--text-secondary)]">
             Aucun des bars retenus ne correspond aux filtres actifs.
           </p>
           <button
@@ -240,6 +295,11 @@ export const BarList: React.FC<BarListProps> = ({
             const customPint = parseNumericPintPrice(customPrices[bar.id]);
             const cheapHighlight = isCheapBar(bar, customPrices[bar.id]);
             const isNavOpen = openNavBarId === bar.id;
+            const isStepsOpen = openStepsBarId === bar.id;
+
+            const hasAnySteps = participants.some(
+              (p) => (barTimes[p.id]?.steps?.length ?? 0) > 0
+            );
 
             const durations = participants
               .map((p) => barTimes[p.id]?.durationSeconds)
@@ -254,13 +314,14 @@ export const BarList: React.FC<BarListProps> = ({
             return (
               <article
                 key={bar.id}
+                ref={(el) => registerBarRef?.(bar.id, el)}
                 onClick={() => onSelectBar(bar.id)}
-                className={`cursor-pointer rounded-2xl border p-4 sm:p-5 backdrop-blur-xl transition-all ${
+                className={`cursor-pointer rounded-2xl border p-4 backdrop-blur-xl transition-all ${
                   isSelected
-                    ? 'border-[#0A84FF] bg-[#1C1C1E]/95 shadow-[0_0_0_1px_rgba(10,132,255,0.35)]'
+                    ? 'border-[#0A84FF] bg-[var(--bg-card-strong)] shadow-[0_0_0_2px_rgba(10,132,255,0.35)]'
                     : isWinner
-                    ? 'border-[#0A84FF]/40 bg-[#1C1C1E]/85'
-                    : 'border-white/10 bg-[#1C1C1E]/75 hover:border-white/20'
+                    ? 'border-[#0A84FF]/45 bg-[var(--bg-card-strong)]'
+                    : 'border-[var(--border-subtle)] bg-[var(--bg-card)] hover:border-[var(--border-strong)]'
                 }`}
               >
                 {/* Header Row: Rank + Title + Green Price Badge */}
@@ -273,26 +334,31 @@ export const BarList: React.FC<BarListProps> = ({
                           <span>QG</span>
                         </span>
                       )}
-                      <h3 className="truncate text-base font-semibold tracking-tight text-white">
+                      <h3 className="truncate text-base font-semibold tracking-tight text-[var(--text-primary)]">
                         {idx + 1}. {bar.name}
                       </h3>
                     </div>
 
                     {/* Nearest Metro / Transit Station */}
                     {bar.nearestStation && (
-                      <p className="mt-1 text-xs font-medium text-white/85">
+                      <p className="mt-1 text-xs font-medium text-[var(--text-muted)]">
                         🚉 {bar.nearestStation}
                       </p>
                     )}
 
                     {/* Rating + Distance + Fairness Summary */}
-                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#8E8E93]">
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-secondary)]">
                       {bar.rating !== null && (
                         <span className="inline-flex items-center gap-1 font-semibold text-[#FF9F0A] tabular-nums">
-                          <Star className="h-3.5 w-3.5 fill-[#FF9F0A] text-[#FF9F0A]" aria-hidden="true" />
+                          <Star
+                            className="h-3.5 w-3.5 fill-[#FF9F0A] text-[#FF9F0A]"
+                            aria-hidden="true"
+                          />
                           {bar.rating.toFixed(1)}
                           {bar.userRatingCount !== null && (
-                            <span className="font-normal text-[#8E8E93]">({bar.userRatingCount})</span>
+                            <span className="font-normal text-[var(--text-secondary)]">
+                              ({bar.userRatingCount})
+                            </span>
                           )}
                         </span>
                       )}
@@ -301,7 +367,7 @@ export const BarList: React.FC<BarListProps> = ({
                       {maxMinutes !== null && avgMinutes !== null && (
                         <>
                           <span aria-hidden="true">·</span>
-                          <span className="text-white/80 tabular-nums">
+                          <span className="text-[var(--text-muted)] tabular-nums">
                             max {maxMinutes} min · moy. {avgMinutes} min
                           </span>
                         </>
@@ -309,14 +375,14 @@ export const BarList: React.FC<BarListProps> = ({
                     </div>
                   </div>
 
-                  {/* Price Badge (€ green when cheap) */}
+                  {/* Price Badge */}
                   <span
                     className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold whitespace-nowrap tabular-nums ${
                       cheapHighlight
                         ? 'border-[#30D158]/35 bg-[#30D158]/15 text-[#30D158]'
                         : priceInfo.tier === 'medium'
                         ? 'border-[#FF9F0A]/30 bg-[#FF9F0A]/15 text-[#FF9F0A]'
-                        : 'border-white/10 bg-[#2C2C2E] text-[#8E8E93]'
+                        : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)]'
                     }`}
                   >
                     {customPint !== null && customPint < 6
@@ -326,9 +392,9 @@ export const BarList: React.FC<BarListProps> = ({
                 </div>
 
                 {/* Address + Opening Status */}
-                <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#8E8E93]">
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-secondary)]">
                   <span className="inline-flex min-w-0 items-center gap-1.5">
-                    <MapPin className="h-3.5 w-3.5 shrink-0 text-[#8E8E93]" aria-hidden="true" />
+                    <MapPin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     <span className="truncate">{bar.address}</span>
                   </span>
                   {bar.closesLabel && (
@@ -345,46 +411,61 @@ export const BarList: React.FC<BarListProps> = ({
                   )}
                 </div>
 
-                {/* Horizontal Row of Travel Times + Transit Line Pills */}
+                {/* Door-to-door Participant Travel Summaries */}
                 {participants.length > 0 && (
-                  <div className="mt-3 flex flex-wrap gap-1.5">
+                  <div className="mt-3 space-y-1.5">
                     {participants.map((p) => {
                       const info = barTimes[p.id];
                       const isFast = info && info.durationSeconds <= FAST_TRIP_SECONDS;
                       return (
                         <div
                           key={p.id}
-                          className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-[#2C2C2E]/65 px-2.5 py-1.5 text-xs"
+                          className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs"
                         >
-                          <span aria-hidden="true">{getModeEmoji(p.mode)}</span>
-                          <span className="max-w-[80px] truncate font-medium text-white/90">
-                            {p.name}
-                          </span>
-                          <span aria-hidden="true" className="text-[#8E8E93]">·</span>
-                          <span
-                            className={`font-semibold tabular-nums ${
-                              isFast ? 'text-[#30D158]' : 'text-white'
-                            }`}
-                          >
-                            {info ? (
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <span aria-hidden="true">{getModeEmoji(p.mode)}</span>
+                            <span className="font-semibold text-[var(--text-primary)] truncate max-w-[90px]">
+                              {p.name}
+                            </span>
+                            <span aria-hidden="true" className="text-[var(--text-secondary)]">
+                              :
+                            </span>
+                            <span
+                              className={`font-bold tabular-nums ${
+                                isFast ? 'text-[#30D158]' : 'text-[var(--text-primary)]'
+                              }`}
+                            >
+                              {info ? (
+                                <>
+                                  {info.isEstimate ? '~' : ''}
+                                  {formatDuration(info.durationSeconds)}
+                                </>
+                              ) : isLoadingRoutes ? (
+                                '…'
+                              ) : (
+                                'N/C'
+                              )}
+                            </span>
+                            {info?.routeSummary && (
                               <>
-                                {info.isEstimate ? '~' : ''}
-                                {formatDuration(info.durationSeconds)}
+                                <span aria-hidden="true" className="text-[var(--text-secondary)]">
+                                  ·
+                                </span>
+                                <span className="truncate text-[var(--text-secondary)]">
+                                  {info.routeSummary}
+                                </span>
                               </>
-                            ) : isLoadingRoutes ? (
-                              '…'
-                            ) : (
-                              'N/C'
                             )}
-                          </span>
+                          </div>
+
                           {info?.transitLine && (
                             <span
-                              className="rounded-md border border-[#0A84FF]/35 bg-[#0A84FF]/20 px-1.5 py-0.5 text-[10px] font-bold tracking-tight text-[#64D2FF]"
+                              className="shrink-0 rounded-md border border-[#0A84FF]/35 bg-[#0A84FF]/20 px-1.5 py-0.5 text-[10px] font-bold tracking-tight text-[#0A84FF]"
                               style={
                                 info.transitLineColor
                                   ? {
                                       borderColor: `${info.transitLineColor}66`,
-                                      backgroundColor: `${info.transitLineColor}26`,
+                                      backgroundColor: `${info.transitLineColor}22`,
                                     }
                                   : undefined
                               }
@@ -395,16 +476,162 @@ export const BarList: React.FC<BarListProps> = ({
                         </div>
                       );
                     })}
+
+                    {hasAnySteps && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenStepsBarId(isStepsOpen ? null : bar.id);
+                        }}
+                        aria-expanded={isStepsOpen}
+                        className="inline-flex min-h-[32px] items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1 text-[11px] font-semibold text-[#0A84FF] transition-colors hover:border-[#0A84FF]/50"
+                      >
+                        <Route className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>
+                          {isStepsOpen ? 'Masquer le détail du trajet' : 'Voir le détail du trajet'}
+                        </span>
+                        {isStepsOpen ? (
+                          <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
+                        ) : (
+                          <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                        )}
+                      </button>
+                    )}
+
+                    {/* Expandable Step-by-Step Transfer Details */}
+                    {isStepsOpen && (
+                      <div
+                        className="space-y-2.5 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-3 text-xs"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {participants.map((p) => {
+                          const info = barTimes[p.id];
+                          const steps = info?.steps || [];
+                          return (
+                            <div
+                              key={`steps-${p.id}`}
+                              className="space-y-1.5 border-b border-[var(--border-subtle)] pb-2.5 last:border-b-0 last:pb-0"
+                            >
+                              <div className="flex items-center justify-between gap-2 font-semibold text-[var(--text-primary)]">
+                                <span>
+                                  {getModeEmoji(p.mode)} {p.name}
+                                </span>
+                                <span className="tabular-nums text-[#0A84FF]">
+                                  {info
+                                    ? `${info.isEstimate ? '~' : ''}${formatDuration(info.durationSeconds)} · ${formatDistanceKm(info.distanceMeters)}`
+                                    : 'N/C'}
+                                </span>
+                              </div>
+
+                              {steps.length === 0 ? (
+                                <p className="text-[11px] text-[var(--text-secondary)]">
+                                  Trajet direct ({formatDistanceKm(info?.distanceMeters || 0)}).
+                                </p>
+                              ) : (
+                                <ol className="space-y-1.5 pl-1">
+                                  {steps.map((step, sIdx) => {
+                                    const stepMins =
+                                      typeof step.durationSeconds === 'number'
+                                        ? Math.max(1, Math.round(step.durationSeconds / 60))
+                                        : null;
+                                    if (step.kind === 'TRANSIT') {
+                                      return (
+                                        <li
+                                          key={sIdx}
+                                          className="flex items-start gap-2 text-[11px] leading-snug"
+                                        >
+                                          <TrainFront
+                                            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#0A84FF]"
+                                            aria-hidden="true"
+                                          />
+                                          <div className="min-w-0 flex-1">
+                                            <div className="flex flex-wrap items-center gap-1.5">
+                                              {step.lineBadge && (
+                                                <span
+                                                  className="rounded px-1.5 py-0.5 text-[10px] font-bold text-[#0A84FF] border border-[#0A84FF]/40 bg-[#0A84FF]/15"
+                                                  style={
+                                                    step.lineColor
+                                                      ? {
+                                                          borderColor: `${step.lineColor}66`,
+                                                          backgroundColor: `${step.lineColor}22`,
+                                                        }
+                                                      : undefined
+                                                  }
+                                                >
+                                                  {step.lineBadge}
+                                                </span>
+                                              )}
+                                              {step.headsign && (
+                                                <span className="font-medium text-[var(--text-primary)]">
+                                                  dir. {step.headsign}
+                                                </span>
+                                              )}
+                                              {stepMins !== null && (
+                                                <span className="text-[var(--text-secondary)] tabular-nums">
+                                                  ({stepMins} min
+                                                  {step.stopCount ? ` · ${step.stopCount} arrêts` : ''})
+                                                </span>
+                                              )}
+                                            </div>
+                                            {(step.departureStop || step.arrivalStop) && (
+                                              <p className="mt-0.5 text-[var(--text-secondary)]">
+                                                {step.departureStop || 'Départ'} →{' '}
+                                                {step.arrivalStop || 'Arrivée'}
+                                              </p>
+                                            )}
+                                          </div>
+                                        </li>
+                                      );
+                                    }
+
+                                    return (
+                                      <li
+                                        key={sIdx}
+                                        className="flex items-start gap-2 text-[11px] text-[var(--text-secondary)]"
+                                      >
+                                        <Footprints
+                                          className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                                          aria-hidden="true"
+                                        />
+                                        <span className="min-w-0 flex-1">
+                                          {step.instructions ? (
+                                            <>{step.instructions}</>
+                                          ) : step.kind === 'BICYCLING' ? (
+                                            'Vélo'
+                                          ) : step.kind === 'DRIVING' ? (
+                                            'Conduite'
+                                          ) : (
+                                            'Marche'
+                                          )}{' '}
+                                          <span className="tabular-nums">
+                                            ({stepMins !== null ? `${stepMins} min · ` : ''}
+                                            {formatDistanceKm(step.distanceMeters)})
+                                          </span>
+                                        </span>
+                                      </li>
+                                    );
+                                  })}
+                                </ol>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {/* Pint Price + "Y aller" + Vote Pill */}
                 <div
-                  className="mt-3.5 flex flex-wrap items-center justify-between gap-2 border-t border-white/10 pt-3"
+                  className="mt-3.5 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-3"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="flex items-center gap-2">
-                    <label htmlFor={`pint-${bar.id}`} className="text-xs font-medium text-[#8E8E93]">
+                    <label
+                      htmlFor={`pint-${bar.id}`}
+                      className="text-xs font-medium text-[var(--text-secondary)]"
+                    >
                       Pinte (€)
                     </label>
                     <input
@@ -414,7 +641,7 @@ export const BarList: React.FC<BarListProps> = ({
                       value={customPrices[bar.id] || ''}
                       onChange={(e) => onChangeCustomPrice(bar.id, e.target.value)}
                       placeholder="5.50"
-                      className="min-h-[38px] w-20 rounded-xl border border-white/10 bg-[#2C2C2E]/75 px-2.5 py-1.5 text-xs font-medium text-white placeholder:text-[#8E8E93] focus:border-[#0A84FF] focus:outline-none tabular-nums"
+                      className="min-h-[38px] w-20 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-input)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:border-[#0A84FF] focus:outline-none tabular-nums"
                     />
                   </div>
 
@@ -426,7 +653,7 @@ export const BarList: React.FC<BarListProps> = ({
                       className={`inline-flex min-h-[40px] items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
                         isNavOpen
                           ? 'border-[#0A84FF]/50 bg-[#0A84FF]/20 text-[#0A84FF]'
-                          : 'border-white/15 bg-[#2C2C2E]/80 text-white hover:bg-[#3A3A3C]'
+                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:bg-[var(--bg-surface-hover)]'
                       }`}
                     >
                       <Navigation className="h-3.5 w-3.5" aria-hidden="true" />
@@ -439,7 +666,7 @@ export const BarList: React.FC<BarListProps> = ({
                       className={`inline-flex min-h-[40px] items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition-all whitespace-nowrap ${
                         hasVoted
                           ? 'bg-[#0A84FF] text-white shadow-sm'
-                          : 'border border-white/15 bg-[#2C2C2E]/80 text-white hover:border-[#0A84FF]/60'
+                          : 'border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:border-[#0A84FF]/60'
                       }`}
                     >
                       {hasVoted ? (
@@ -456,15 +683,17 @@ export const BarList: React.FC<BarListProps> = ({
                 {/* Inline "Y aller" Google Maps / Citymapper Drawer */}
                 {isNavOpen && (
                   <div
-                    className="mt-2.5 flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-[#2C2C2E]/60 p-2.5"
+                    className="mt-2.5 flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2.5"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <span className="text-[11px] font-medium text-[#8E8E93]">Ouvrir avec :</span>
+                    <span className="text-[11px] font-medium text-[var(--text-secondary)]">
+                      Ouvrir avec :
+                    </span>
                     <a
                       href={buildGoogleMapsUrl(bar)}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex min-h-[34px] items-center gap-1.5 rounded-full border border-white/15 bg-[#1C1C1E] px-3 py-1 text-xs font-semibold text-white hover:border-[#0A84FF]/60"
+                      className="inline-flex min-h-[34px] items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-card-strong)] px-3 py-1 text-xs font-semibold text-[var(--text-primary)] hover:border-[#0A84FF]/60"
                     >
                       <span>Google Maps</span>
                       <ExternalLink className="h-3 w-3" aria-hidden="true" />
@@ -506,7 +735,7 @@ export const BarList: React.FC<BarListProps> = ({
 
                 {/* Required Google Places Attributions */}
                 {bar.attributions.length > 0 && (
-                  <p className="mt-2 text-[10px] text-[#8E8E93]/80">
+                  <p className="mt-2 text-[10px] text-[var(--text-secondary)]">
                     Source :{' '}
                     {bar.attributions.map((attr, aIdx) => (
                       <React.Fragment key={`${attr.provider}-${aIdx}`}>
@@ -517,7 +746,7 @@ export const BarList: React.FC<BarListProps> = ({
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={(e) => e.stopPropagation()}
-                            className="underline hover:text-white"
+                            className="underline hover:text-[var(--text-primary)]"
                           >
                             {attr.provider}
                           </a>

@@ -1,5 +1,4 @@
 import {createRoot} from 'react-dom/client';
-import {registerSW} from 'virtual:pwa-register';
 import App from './App.tsx';
 import './index.css';
 
@@ -17,7 +16,13 @@ console.error = (...args: unknown[]) => {
   }
 };
 
-// Register PWA service worker
-registerSW({immediate: true});
+// Register lightweight PWA service worker
+if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {
+      // Ignore registration error in restricted preview frames
+    });
+  });
+}
 
 createRoot(document.getElementById('root')!).render(<App />);
