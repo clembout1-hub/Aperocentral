@@ -19,8 +19,8 @@ interface BottomSheetProps {
 
 function getSnapHeights(viewportH: number): Record<SheetSnap, number> {
   return {
-    low: Math.max(152, Math.round(viewportH * 0.18)),
-    mid: Math.max(320, Math.round(viewportH * 0.52)),
+    low: Math.max(152, Math.round(viewportH * 0.2)),
+    mid: Math.max(320, Math.round(viewportH * 0.55)),
     high: Math.max(460, Math.round(viewportH * 0.9)),
   };
 }

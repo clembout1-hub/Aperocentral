@@ -26,10 +26,11 @@ import {
   buildGoogleMapsUrl,
   formatDistanceKm,
   formatDuration,
+  formatEuroPrice,
   formatPriceLevel,
+  getEffectiveBarPintPrice,
   getModeEmoji,
   isCheapBar,
-  parseNumericPintPrice,
 } from '../utils/geo';
 
 interface BarListProps {
@@ -39,6 +40,7 @@ interface BarListProps {
   travelMatrix: Record<string, Record<string, TravelTimeInfo>>; // barId -> participantId -> info
   votes: Record<string, string[]>;
   customPrices: Record<string, string>;
+  targetDateTime: string;
   activeUserName: string;
   selectedBarId: string | null;
   winningBarId: string | null;
@@ -73,6 +75,7 @@ export const BarList: React.FC<BarListProps> = ({
   travelMatrix,
   votes,
   customPrices,
+  targetDateTime,
   activeUserName,
   selectedBarId,
   winningBarId,
@@ -100,6 +103,7 @@ export const BarList: React.FC<BarListProps> = ({
   const voterKey = activeUserName.trim() || participants[0]?.name || 'Moi';
   const [openNavBarId, setOpenNavBarId] = useState<string | null>(null);
   const [openStepsBarId, setOpenStepsBarId] = useState<string | null>(null);
+  const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
 
   const isAllActive = !onlyCheap && !onlyTopRated && !onlyOpen;
 
@@ -292,8 +296,13 @@ export const BarList: React.FC<BarListProps> = ({
             const isWinner = winningBarId === bar.id;
             const isSelected = selectedBarId === bar.id;
             const priceInfo = formatPriceLevel(bar.priceLevel);
-            const customPint = parseNumericPintPrice(customPrices[bar.id]);
-            const cheapHighlight = isCheapBar(bar, customPrices[bar.id]);
+            const effectivePrice = getEffectiveBarPintPrice(
+              bar,
+              customPrices[bar.id],
+              targetDateTime
+            );
+            const cheapHighlight = isCheapBar(bar, customPrices[bar.id], targetDateTime);
+            const hasCoverImage = Boolean(bar.coverImageUrl && !brokenImages[bar.id]);
             const isNavOpen = openNavBarId === bar.id;
             const isStepsOpen = openStepsBarId === bar.id;
 
@@ -311,6 +320,12 @@ export const BarList: React.FC<BarListProps> = ({
             const maxMinutes =
               durations.length > 0 ? Math.round(Math.max(...durations) / 60) : null;
 
+            const badgeLabel = effectivePrice.isHappyHour
+              ? `HH ${formatEuroPrice(effectivePrice.price!)}`
+              : effectivePrice.price !== null
+              ? `Pinte ${formatEuroPrice(effectivePrice.price)}`
+              : priceInfo.label;
+
             return (
               <article
                 key={bar.id}
@@ -324,7 +339,23 @@ export const BarList: React.FC<BarListProps> = ({
                     : 'border-[var(--border-subtle)] bg-[var(--bg-card)] hover:border-[var(--border-strong)]'
                 }`}
               >
-                {/* Header Row: Rank + Title + Green Price Badge */}
+                {/* Cover photo from local Paris dataset */}
+                {hasCoverImage && bar.coverImageUrl && (
+                  <div className="mb-3 h-32 sm:h-36 w-full overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
+                    <img
+                      src={bar.coverImageUrl}
+                      alt={bar.name}
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                      onError={() =>
+                        setBrokenImages((prev) => ({...prev, [bar.id]: true}))
+                      }
+                      className="h-full w-full object-cover"
+                    />
+                  </div>
+                )}
+
+                {/* Header Row: Rank + Title + Happy Hour / Pint Price Badge */}
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -362,7 +393,7 @@ export const BarList: React.FC<BarListProps> = ({
                           )}
                         </span>
                       )}
-                      <span aria-hidden="true">·</span>
+                      {bar.rating !== null && <span aria-hidden="true">·</span>}
                       <span className="tabular-nums">{Math.round(bar.distanceFromCenterMeters)} m</span>
                       {maxMinutes !== null && avgMinutes !== null && (
                         <>
@@ -375,21 +406,51 @@ export const BarList: React.FC<BarListProps> = ({
                     </div>
                   </div>
 
-                  {/* Price Badge */}
+                  {/* Price Badge (Green Happy Hour or Regular Pint / Price Tier) */}
                   <span
                     className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold whitespace-nowrap tabular-nums ${
-                      cheapHighlight
+                      effectivePrice.isHappyHour
+                        ? 'border-[#30D158]/45 bg-[#30D158]/20 text-[#30D158]'
+                        : cheapHighlight
                         ? 'border-[#30D158]/35 bg-[#30D158]/15 text-[#30D158]'
-                        : priceInfo.tier === 'medium'
+                        : effectivePrice.price !== null || priceInfo.tier === 'medium'
                         ? 'border-[#FF9F0A]/30 bg-[#FF9F0A]/15 text-[#FF9F0A]'
                         : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)]'
                     }`}
                   >
-                    {customPint !== null && customPint < 6
-                      ? `Pinte ${customPrices[bar.id]} €`
-                      : priceInfo.label}
+                    {badgeLabel}
                   </span>
                 </div>
+
+                {/* Happy Hour Slot & Regular/HH Price Comparison */}
+                {(effectivePrice.happyHourSlotLabel ||
+                  (effectivePrice.regularPrice !== null &&
+                    effectivePrice.happyHourPrice !== null)) && (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                    {effectivePrice.happyHourSlotLabel && (
+                      <span
+                        className={`inline-flex items-center gap-1 font-medium tabular-nums ${
+                          effectivePrice.isHappyHour
+                            ? 'text-[#30D158]'
+                            : 'text-[var(--text-secondary)]'
+                        }`}
+                      >
+                        <Clock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        <span>{effectivePrice.happyHourSlotLabel}</span>
+                      </span>
+                    )}
+                    {effectivePrice.isHappyHour && effectivePrice.regularPrice !== null && (
+                      <span className="text-[var(--text-secondary)] tabular-nums">
+                        · Hors HH : {formatEuroPrice(effectivePrice.regularPrice)}
+                      </span>
+                    )}
+                    {!effectivePrice.isHappyHour && effectivePrice.happyHourPrice !== null && (
+                      <span className="text-[#30D158] font-medium tabular-nums">
+                        · Tarif HH : {formatEuroPrice(effectivePrice.happyHourPrice)}
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {/* Address + Opening Status */}
                 <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-secondary)]">

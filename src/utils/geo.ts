@@ -50,7 +50,13 @@ const ALLOWED_BAR_PRIMARY_TYPES = new Set([
   'brewery',
   'gastropub',
   'brasserie',
+]);
+
+const EXCLUDED_FOOD_AND_CAFE_TYPES = new Set([
+  'restaurant',
+  'fast_food_restaurant',
   'cafe',
+  'bakery',
 ]);
 
 const REJECTED_CORPORATE_TYPES = new Set([
@@ -95,7 +101,7 @@ const AU_BUREAU_EXCEPTION_REGEX = /\bau\s+bureau\b/i;
 
 /**
  * Strict double filter:
- * 1) primaryType must be a bar/pub/brasserie/cafe (or legacy types include bar/pub when primaryType is absent)
+ * 1) primaryType must be a bar/pub/wine_bar/cocktail_bar (rejecting restaurant, fast_food_restaurant, cafe, bakery)
  * 2) Reject corporate offices, agencies, stores, or company-like names (preserving "Au Bureau" pubs)
  */
 export function isRealBarPlace(
@@ -107,6 +113,9 @@ export function isRealBarPlace(
   const normalizedTypes = Array.isArray(types) ? types.map((t) => t.toLowerCase().trim()) : [];
 
   if (normalizedPrimary) {
+    if (EXCLUDED_FOOD_AND_CAFE_TYPES.has(normalizedPrimary)) {
+      return false;
+    }
     if (!ALLOWED_BAR_PRIMARY_TYPES.has(normalizedPrimary)) {
       return false;
     }
@@ -257,25 +266,66 @@ export function extractAllPostalCodesFromText(text: string): string[] {
   return Array.from(normalized);
 }
 
+export function normalizeArrondissementToPostalCode(
+  rawArr?: string | null,
+  fallbackPostal?: string | null,
+  address?: string | null
+): string | null {
+  const tryConvert = (val?: string | null): string | null => {
+    if (!val) return null;
+    const trimmed = val.trim();
+    const fiveDigit = trimmed.match(/\b(\d{5})\b/);
+    if (fiveDigit) {
+      return fiveDigit[1] === '75116' ? '75016' : fiveDigit[1];
+    }
+    const arrMatch = trimmed.match(/\b(1?\d|20)\s*(?:er|e|ème|eme)?\b/i);
+    if (arrMatch) {
+      const num = Number.parseInt(arrMatch[1], 10);
+      if (num >= 1 && num <= 20) {
+        return `750${String(num).padStart(2, '0')}`;
+      }
+    }
+    return null;
+  };
+
+  return (
+    tryConvert(fallbackPostal) ||
+    tryConvert(rawArr) ||
+    tryConvert(address)
+  );
+}
+
 export function isPointInExcludedZones(
   lat: number,
   lng: number,
   postalCode: string | null,
   excludedZones: ExcludedZones,
-  addressText?: string
+  addressText?: string,
+  arrondissement?: string | null
 ): boolean {
   const excludedCodes = excludedZones.postalCodes || [];
 
+  const candidateCodes = new Set<string>();
   if (postalCode) {
-    const normalized = postalCode === '75116' ? '75016' : postalCode;
-    if (excludedCodes.includes(postalCode) || excludedCodes.includes(normalized)) {
-      return true;
+    candidateCodes.add(postalCode);
+    candidateCodes.add(postalCode === '75116' ? '75016' : postalCode);
+  }
+  const normalizedArrCode = normalizeArrondissementToPostalCode(
+    arrondissement,
+    postalCode,
+    addressText
+  );
+  if (normalizedArrCode) {
+    candidateCodes.add(normalizedArrCode);
+  }
+  if (addressText) {
+    for (const c of extractAllPostalCodesFromText(addressText)) {
+      candidateCodes.add(c);
     }
   }
 
-  if (addressText && excludedCodes.length > 0) {
-    const codesInAddress = extractAllPostalCodesFromText(addressText);
-    if (codesInAddress.some((code) => excludedCodes.includes(code))) {
+  for (const code of candidateCodes) {
+    if (excludedCodes.includes(code)) {
       return true;
     }
   }
@@ -557,13 +607,127 @@ export function parseNumericPintPrice(customPrice?: string): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-export function isCheapBar(bar: BarCandidate, customPrice?: string): boolean {
+export function parseTimeToMinutes(raw?: string | null): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim().toLowerCase();
+  const match = trimmed.match(/^(\d{1,2})\s*[:h.]\s*(\d{2})?$/);
+  if (!match) return null;
+  const hours = Number.parseInt(match[1], 10);
+  const mins = match[2] ? Number.parseInt(match[2], 10) : 0;
+  if (!Number.isFinite(hours) || !Number.isFinite(mins) || hours < 0 || hours > 24 || mins < 0 || mins > 59) {
+    return null;
+  }
+  return (hours % 24) * 60 + mins;
+}
+
+export function formatTimeFrench(raw?: string | null): string | null {
+  const mins = parseTimeToMinutes(raw);
+  if (mins === null) return raw?.trim() || null;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, '0')}h${String(m).padStart(2, '0')}`;
+}
+
+export function isHappyHourActive(
+  startStr?: string | null,
+  endStr?: string | null,
+  targetDateTime?: string | Date | null
+): boolean {
+  const startMins = parseTimeToMinutes(startStr);
+  const endMins = parseTimeToMinutes(endStr);
+  if (startMins === null || endMins === null) return false;
+
+  const targetDate =
+    targetDateTime instanceof Date
+      ? targetDateTime
+      : targetDateTime
+      ? new Date(targetDateTime)
+      : new Date();
+  const effectiveDate = Number.isNaN(targetDate.getTime()) ? new Date() : targetDate;
+  const targetMins = effectiveDate.getHours() * 60 + effectiveDate.getMinutes();
+
+  if (startMins <= endMins) {
+    return targetMins >= startMins && targetMins <= endMins;
+  }
+  // Overnight happy hour (e.g. 18:00 - 01:00)
+  return targetMins >= startMins || targetMins <= endMins;
+}
+
+export function formatEuroPrice(price: number): string {
+  return `${price.toFixed(2).replace(/\.00$/, '').replace('.', ',')} €`;
+}
+
+export function getEffectiveBarPintPrice(
+  bar: Pick<BarCandidate, 'pintPrice' | 'happyHourPrice' | 'happyHourStart' | 'happyHourEnd'>,
+  customPrice?: string,
+  targetDateTime?: string | Date | null
+): {
+  price: number | null;
+  isHappyHour: boolean;
+  regularPrice: number | null;
+  happyHourPrice: number | null;
+  happyHourSlotLabel: string | null;
+} {
+  const regularPrice =
+    typeof bar.pintPrice === 'number' && Number.isFinite(bar.pintPrice) && bar.pintPrice > 0
+      ? bar.pintPrice
+      : null;
+  const hhPrice =
+    typeof bar.happyHourPrice === 'number' &&
+    Number.isFinite(bar.happyHourPrice) &&
+    bar.happyHourPrice > 0
+      ? bar.happyHourPrice
+      : null;
+
+  const startLabel = formatTimeFrench(bar.happyHourStart);
+  const endLabel = formatTimeFrench(bar.happyHourEnd);
+  const happyHourSlotLabel =
+    startLabel && endLabel ? `HH : ${startLabel} - ${endLabel}` : null;
+
+  const customPint = parseNumericPintPrice(customPrice);
+  const hhActive =
+    hhPrice !== null && isHappyHourActive(bar.happyHourStart, bar.happyHourEnd, targetDateTime);
+
+  if (customPint !== null) {
+    return {
+      price: customPint,
+      isHappyHour: false,
+      regularPrice,
+      happyHourPrice: hhPrice,
+      happyHourSlotLabel,
+    };
+  }
+
+  if (hhActive && hhPrice !== null) {
+    return {
+      price: hhPrice,
+      isHappyHour: true,
+      regularPrice,
+      happyHourPrice: hhPrice,
+      happyHourSlotLabel,
+    };
+  }
+
+  return {
+    price: regularPrice,
+    isHappyHour: false,
+    regularPrice,
+    happyHourPrice: hhPrice,
+    happyHourSlotLabel,
+  };
+}
+
+export function isCheapBar(
+  bar: BarCandidate,
+  customPrice?: string,
+  targetDateTime?: string | Date | null
+): boolean {
+  const effective = getEffectiveBarPintPrice(bar, customPrice, targetDateTime);
+  if (effective.price !== null) {
+    return effective.price < 6;
+  }
   const numericLevel = parseNumericPriceLevel(bar.priceLevel);
   if (numericLevel !== null && numericLevel <= 1) {
-    return true;
-  }
-  const pint = parseNumericPintPrice(customPrice);
-  if (pint !== null && pint < 6) {
     return true;
   }
   return false;
@@ -585,6 +749,102 @@ export function formatPriceLevel(priceLevel: string | number | null | undefined)
     return {label: '€€', tier: 'medium', numericRank: 2};
   }
   return {label: '€€€', tier: 'expensive', numericRank: numeric};
+}
+
+export function getParticipantWalkSeconds(
+  participant: Participant,
+  info: TravelTimeInfo | undefined
+): number {
+  if (!info) return 0;
+  if (typeof info.walkSeconds === 'number' && Number.isFinite(info.walkSeconds)) {
+    return info.walkSeconds;
+  }
+  if (info.steps && info.steps.length > 0) {
+    let walkSec = 0;
+    for (const s of info.steps) {
+      if (s.kind === 'WALKING') {
+        if (typeof s.durationSeconds === 'number' && Number.isFinite(s.durationSeconds)) {
+          walkSec += s.durationSeconds;
+        } else if (s.distanceMeters > 0) {
+          walkSec += Math.round((s.distanceMeters / 80) * 60);
+        }
+      }
+    }
+    return walkSec;
+  }
+  if (participant.mode === 'WALKING') {
+    return info.durationSeconds;
+  }
+  return 0;
+}
+
+export interface BarFairnessMetrics {
+  avgTime: number; // minutes
+  maxTime: number; // minutes
+  minTime: number; // minutes
+  spread: number; // minutes (maxTime - minTime)
+  maxWalkMinutes: number;
+  score: number;
+  hasRoutes: boolean;
+}
+
+export function computeBarFairnessMetrics(
+  barId: string,
+  participants: Participant[],
+  travelMatrix: Record<string, Record<string, TravelTimeInfo>>
+): BarFairnessMetrics {
+  const row = travelMatrix[barId];
+  if (!row || participants.length === 0) {
+    return {
+      avgTime: 0,
+      maxTime: 0,
+      minTime: 0,
+      spread: 0,
+      maxWalkMinutes: 0,
+      score: Number.POSITIVE_INFINITY,
+      hasRoutes: false,
+    };
+  }
+
+  const durationsMin: number[] = [];
+  const walkMins: number[] = [];
+  for (const p of participants) {
+    const info = row[p.id];
+    if (info && typeof info.durationSeconds === 'number') {
+      durationsMin.push(info.durationSeconds / 60);
+      walkMins.push(getParticipantWalkSeconds(p, info) / 60);
+    }
+  }
+
+  if (durationsMin.length === 0) {
+    return {
+      avgTime: 0,
+      maxTime: 0,
+      minTime: 0,
+      spread: 0,
+      maxWalkMinutes: 0,
+      score: Number.POSITIVE_INFINITY,
+      hasRoutes: false,
+    };
+  }
+
+  const avgTime = durationsMin.reduce((sum, d) => sum + d, 0) / durationsMin.length;
+  const maxTime = Math.max(...durationsMin);
+  const minTime = Math.min(...durationsMin);
+  const spread = maxTime - minTime;
+  const maxWalkMinutes = walkMins.length > 0 ? Math.max(...walkMins) : 0;
+  const walkPenalty = maxWalkMinutes > 12 ? (maxWalkMinutes - 12) * 3 : 0;
+  const score = avgTime + 1.8 * spread + walkPenalty;
+
+  return {
+    avgTime,
+    maxTime,
+    minTime,
+    spread,
+    maxWalkMinutes,
+    score,
+    hasRoutes: true,
+  };
 }
 
 export function buildGoogleMapsUrl(
@@ -621,8 +881,17 @@ export function buildMessengerRecapText(
   travelTimesByParticipant: Record<string, TravelTimeInfo>
 ): string {
   const dateLabel = formatFrenchDateTime(session.dateTime);
-  const customPrice = session.customPrices[bar.id];
-  const priceTag = customPrice ? ` · Pinte ${customPrice} €` : '';
+  const effectivePrice = getEffectiveBarPintPrice(
+    bar,
+    session.customPrices[bar.id],
+    session.dateTime
+  );
+  const priceTag =
+    effectivePrice.price !== null
+      ? effectivePrice.isHappyHour
+        ? ` · HH ${formatEuroPrice(effectivePrice.price)}`
+        : ` · Pinte ${formatEuroPrice(effectivePrice.price)}`
+      : '';
   const voteCount = (session.votes[bar.id] || []).length;
   const voteLine = voteCount > 0 ? ` (${voteCount} vote${voteCount > 1 ? 's' : ''})` : '';
 

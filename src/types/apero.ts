@@ -85,17 +85,41 @@ export interface OpeningPeriodLite {
   close: OpeningPeriodPoint | null;
 }
 
+export interface LocalParisBarRecord {
+  id: string;
+  name: string;
+  address: string;
+  arrondissement: string | null;
+  postalCode: string | null;
+  lat: number;
+  lng: number;
+  pintPrice: number | null;
+  happyHourPrice: number | null;
+  happyHourStart: string | null;
+  happyHourEnd: string | null;
+  rating: number | null;
+  userRatingCount: number | null;
+  coverImageUrl: string | null;
+  nearestStation: string | null;
+}
+
 export interface BarCandidate {
   id: string;
   name: string;
   primaryType?: string | null;
   address: string;
   postalCode: string | null;
+  arrondissement?: string | null;
   lat: number;
   lng: number;
   rating: number | null;
   userRatingCount: number | null;
   priceLevel: string | number | null;
+  pintPrice?: number | null;
+  happyHourPrice?: number | null;
+  happyHourStart?: string | null;
+  happyHourEnd?: string | null;
+  coverImageUrl?: string | null;
   googleMapsURI: string | null;
   attributions: BarPlaceAttribution[];
   distanceFromCenterMeters: number;
@@ -103,6 +127,7 @@ export interface BarCandidate {
   isOpenAtTarget: boolean | null;
   closesLabel: string | null;
   nearestStation?: string | null;
+  source?: 'local' | 'google_places';
 }
 
 export interface RouteStepDetail {
@@ -121,6 +146,7 @@ export interface RouteStepDetail {
 export interface TravelTimeInfo {
   durationSeconds: number;
   distanceMeters: number;
+  walkSeconds?: number;
   isEstimate?: boolean;
   transitLine?: string | null; // e.g. 'M11', 'RER A'
   transitLineColor?: string | null;

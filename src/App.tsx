@@ -36,6 +36,7 @@ import {ZoneExclusionModal} from './components/ZoneExclusionModal';
 import type {
   BarCandidate,
   ExcludedCustomZone,
+  LocalParisBarRecord,
   OpeningPeriodLite,
   Participant,
   RouteStepDetail,
@@ -53,20 +54,22 @@ import {
   buildRouteSummary,
   buildSpiralPointsForRadius,
   calculateWeightedBarycenter,
+  computeBarFairnessMetrics,
   downloadIcsFile,
   estimateTravelSeconds,
   evaluateOpeningStatus,
   extractPostalCode,
   formatPriceLevel,
   formatTransitLineBadge,
+  getEffectiveBarPintPrice,
   haversineDistanceMeters,
   isCheapBar,
   isPointInExcludedZones,
   isRealBarPlace,
-  parseNumericPintPrice,
   SPIRAL_RADII_METERS,
   type SpiralSearchPoint,
 } from './utils/geo';
+import {fetchLocalParisBars, toBarCandidateFromLocal} from './utils/localBars';
 import {
   buildShareUrl,
   createDefaultSession,
@@ -263,6 +266,27 @@ function extractStepsFromRest(
   });
 }
 
+function sumWalkSeconds(
+  steps: RouteStepDetail[],
+  mode: TransportMode,
+  totalDurationSeconds: number
+): number {
+  if (steps.length > 0) {
+    let walkSec = 0;
+    for (const s of steps) {
+      if (s.kind === 'WALKING') {
+        if (typeof s.durationSeconds === 'number' && Number.isFinite(s.durationSeconds)) {
+          walkSec += s.durationSeconds;
+        } else if (s.distanceMeters > 0) {
+          walkSec += Math.round((s.distanceMeters / 80) * 60);
+        }
+      }
+    }
+    return walkSec;
+  }
+  return mode === 'WALKING' ? totalDurationSeconds : 0;
+}
+
 async function computeDoorToDoorRoute(
   routesLib: google.maps.RoutesLibrary | null,
   apiKey: string,
@@ -297,6 +321,9 @@ async function computeDoorToDoorRoute(
         region: 'FR',
         internalUsageAttributionIds: ['gmp_mcp_codeassist_v1_aistudio'],
         ...(effectiveDeparture ? {departureTime: effectiveDeparture} : {}),
+        ...(participant.mode === 'TRANSIT'
+          ? {transitPreference: {routingPreference: 'LESS_WALKING'}}
+          : {}),
         ...(participant.mode === 'DRIVING' && effectiveDeparture
           ? {routingPreference: 'TRAFFIC_AWARE'}
           : {}),
@@ -311,6 +338,7 @@ async function computeDoorToDoorRoute(
       ) {
         const sdkSteps = route.legs?.[0]?.steps || [];
         const steps = extractStepsFromSdk(sdkSteps, participant.mode);
+        const durationSeconds = Math.round(route.durationMillis / 1000);
         const distanceMeters =
           typeof route.distanceMeters === 'number'
             ? route.distanceMeters
@@ -318,8 +346,9 @@ async function computeDoorToDoorRoute(
         const firstTransit = steps.find((st) => st.kind === 'TRANSIT' && st.lineBadge);
 
         return {
-          durationSeconds: Math.round(route.durationMillis / 1000),
+          durationSeconds,
           distanceMeters,
+          walkSeconds: sumWalkSeconds(steps, participant.mode, durationSeconds),
           isEstimate: false,
           transitLine: firstTransit?.lineBadge || null,
           transitLineColor: firstTransit?.lineColor || null,
@@ -345,6 +374,9 @@ async function computeDoorToDoorRoute(
       };
       if (effectiveDeparture) {
         restBody.departureTime = effectiveDeparture.toISOString();
+      }
+      if (participant.mode === 'TRANSIT') {
+        restBody.transitPreferences = {routingPreference: 'LESS_WALKING'};
       }
       if (participant.mode === 'DRIVING' && effectiveDeparture) {
         restBody.routingPreference = 'TRAFFIC_AWARE';
@@ -383,6 +415,7 @@ async function computeDoorToDoorRoute(
           return {
             durationSeconds: durationSec,
             distanceMeters,
+            walkSeconds: sumWalkSeconds(steps, participant.mode, durationSec),
             isEstimate: false,
             transitLine: firstTransit?.lineBadge || null,
             transitLineColor: firstTransit?.lineColor || null,
@@ -399,9 +432,16 @@ async function computeDoorToDoorRoute(
   }
 
   const dist = haversineDistanceMeters(participant, bar);
+  const estDuration = estimateTravelSeconds(dist, participant.mode);
   return {
-    durationSeconds: estimateTravelSeconds(dist, participant.mode),
+    durationSeconds: estDuration,
     distanceMeters: Math.round(dist),
+    walkSeconds:
+      participant.mode === 'WALKING'
+        ? estDuration
+        : participant.mode === 'TRANSIT'
+        ? Math.round(estDuration * 0.2)
+        : 0,
     isEstimate: true,
     routeSummary: buildRouteSummary(participant.mode, [], dist),
     steps: [],
@@ -440,6 +480,7 @@ interface MapsWorkspaceProps {
   searchTriggerId: number;
   isDarkMode: boolean;
   sheetSnap: SheetSnap;
+  getLocalBars: () => Promise<LocalParisBarRecord[]>;
   onSelectBar: (id: string | null) => void;
   onSearchLoadingChange: (barsLoading: boolean, routesLoading: boolean) => void;
   onSearchError: (err: string | null) => void;
@@ -459,6 +500,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
   searchTriggerId,
   isDarkMode,
   sheetSnap,
+  getLocalBars,
   onSelectBar,
   onSearchLoadingChange,
   onSearchError,
@@ -505,7 +547,8 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
           bar.lng,
           bar.postalCode,
           currentSession.excludedZones,
-          bar.address
+          bar.address,
+          bar.arrondissement
         );
 
       const searchNearbyBars = async (
@@ -535,6 +578,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
               radius: 800,
             },
             includedPrimaryTypes: ['bar', 'pub', 'wine_bar', 'cocktail_bar'],
+            excludedPrimaryTypes: ['restaurant', 'fast_food_restaurant', 'cafe', 'bakery'],
             maxResultCount: 20,
             rankPreference: placesLib.SearchNearbyRankPreference.POPULARITY,
             language: 'fr',
@@ -581,6 +625,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
                 isOpenAtTarget: openEval.isOpen,
                 closesLabel: openEval.closesLabel,
                 nearestStation: null,
+                source: 'google_places' as const,
               };
             });
         } catch (newApiErr) {
@@ -654,149 +699,193 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
                 isOpenAtTarget,
                 closesLabel: null,
                 nearestStation: null,
+                source: 'google_places' as const,
               };
             });
         }
       };
 
       try {
-        const initialRaw = await searchNearbyBars(weightedCenter);
-        if (cancelled) return;
-
         let effectiveCenter = weightedCenter;
         let nextShiftNotice: string | null = null;
-        let filtered = initialRaw.filter(isStrictlyValid);
+        let candidatePool20: BarCandidate[] = [];
 
-        const allValidById: Record<string, BarCandidate> = {};
-        for (const b of filtered) {
-          allValidById[b.id] = b;
-        }
+        // 1. Check priority local dataset (/bars-paris.json) within 4 km of weightedCenter
+        const localRecords = await getLocalBars();
+        if (cancelled) return;
 
-        if (filtered.length < 8) {
-          type SpiralCandidateResult = {
-            point: SpiralSearchPoint;
-            bars: BarCandidate[];
-          };
+        const localCandidatesAll = localRecords.map((rec) =>
+          toBarCandidateFromLocal(rec, weightedCenter)
+        );
+        const localWithin4Km = localCandidatesAll.filter(
+          (bar) => bar.distanceFromCenterMeters <= 4000
+        );
 
-          let winningSpiral: SpiralCandidateResult | null = null;
-          let bestPartialSpiral: SpiralCandidateResult | null = null;
+        if (localWithin4Km.length >= 5) {
+          const validWithin4Km = localWithin4Km
+            .filter(isStrictlyValid)
+            .sort((a, b) => a.distanceFromCenterMeters - b.distanceFromCenterMeters);
 
-          const isBetterPartial = (
-            candidate: SpiralCandidateResult,
-            currentBest: SpiralCandidateResult | null
-          ) => {
-            if (!currentBest) return true;
-            if (candidate.bars.length !== currentBest.bars.length) {
-              return candidate.bars.length > currentBest.bars.length;
+          let selectedLocalPool = validWithin4Km;
+          if (selectedLocalPool.length < 5) {
+            const validAllLocal = localCandidatesAll
+              .filter(isStrictlyValid)
+              .sort((a, b) => a.distanceFromCenterMeters - b.distanceFromCenterMeters);
+            if (validAllLocal.length > selectedLocalPool.length) {
+              selectedLocalPool = validAllLocal;
             }
-            return candidate.point.avgParticipantDist < currentBest.point.avgParticipantDist;
-          };
+          }
 
-          const probeGroup = async (
-            points: SpiralSearchPoint[]
-          ): Promise<{winner: SpiralCandidateResult | null; best: SpiralCandidateResult | null}> => {
-            if (points.length === 0) return {winner: null, best: null};
-            const results = await Promise.all(
-              points.map(async (pt) => {
-                const raw = await searchNearbyBars({lat: pt.lat, lng: pt.lng});
-                const valid = raw.filter(isStrictlyValid);
-                for (const b of valid) {
-                  allValidById[b.id] = b;
-                }
-                return {point: pt, bars: valid};
-              })
-            );
-
-            let best: SpiralCandidateResult | null = null;
-            for (const entry of results) {
-              if (isBetterPartial(entry, best)) {
-                best = entry;
-              }
-            }
-
-            const winner = results.find((entry) => entry.bars.length >= 8) || null;
-            return {winner, best};
-          };
-
-          for (const ringRadius of SPIRAL_RADII_METERS) {
-            if (cancelled) return;
-            const ringPoints = buildSpiralPointsForRadius(
-              weightedCenter,
-              ringRadius,
-              currentSession.participants,
+          if (selectedLocalPool.length > 0) {
+            candidatePool20 = selectedLocalPool.slice(0, 20);
+            const centerExcluded = isPointInExcludedZones(
+              weightedCenter.lat,
+              weightedCenter.lng,
+              null,
               currentSession.excludedZones
             );
-
-            const primaryPoints = ringPoints.filter((p) => !p.isPointExcluded);
-            const secondaryPoints = ringPoints.filter((p) => p.isPointExcluded);
-
-            const primaryRes = await probeGroup(primaryPoints);
-            if (cancelled) return;
-            if (primaryRes.best && isBetterPartial(primaryRes.best, bestPartialSpiral)) {
-              bestPartialSpiral = primaryRes.best;
+            if (centerExcluded) {
+              effectiveCenter = {
+                lat: candidatePool20[0].lat,
+                lng: candidatePool20[0].lng,
+              };
+              nextShiftNotice =
+                'Point de recherche recentré hors des arrondissements/zones exclus.';
             }
-            winningSpiral = primaryRes.winner;
+          }
+        }
 
-            if (!winningSpiral) {
-              const secondaryRes = await probeGroup(secondaryPoints);
-              if (cancelled) return;
-              if (secondaryRes.best && isBetterPartial(secondaryRes.best, bestPartialSpiral)) {
-                bestPartialSpiral = secondaryRes.best;
+        // 2. Fallback to Google Places nearbySearch if outside Paris/petite couronne (< 5 local bars within 4 km)
+        if (candidatePool20.length === 0) {
+          const initialRaw = await searchNearbyBars(weightedCenter);
+          if (cancelled) return;
+
+          let filtered = initialRaw.filter(isStrictlyValid);
+
+          const allValidById: Record<string, BarCandidate> = {};
+          for (const b of filtered) {
+            allValidById[b.id] = b;
+          }
+
+          if (filtered.length < 8) {
+            type SpiralCandidateResult = {
+              point: SpiralSearchPoint;
+              bars: BarCandidate[];
+            };
+
+            let winningSpiral: SpiralCandidateResult | null = null;
+            let bestPartialSpiral: SpiralCandidateResult | null = null;
+
+            const isBetterPartial = (
+              candidate: SpiralCandidateResult,
+              currentBest: SpiralCandidateResult | null
+            ) => {
+              if (!currentBest) return true;
+              if (candidate.bars.length !== currentBest.bars.length) {
+                return candidate.bars.length > currentBest.bars.length;
               }
-              winningSpiral = secondaryRes.winner;
+              return candidate.point.avgParticipantDist < currentBest.point.avgParticipantDist;
+            };
+
+            const probeGroup = async (
+              points: SpiralSearchPoint[]
+            ): Promise<{winner: SpiralCandidateResult | null; best: SpiralCandidateResult | null}> => {
+              if (points.length === 0) return {winner: null, best: null};
+              const results = await Promise.all(
+                points.map(async (pt) => {
+                  const raw = await searchNearbyBars({lat: pt.lat, lng: pt.lng});
+                  const valid = raw.filter(isStrictlyValid);
+                  for (const b of valid) {
+                    allValidById[b.id] = b;
+                  }
+                  return {point: pt, bars: valid};
+                })
+              );
+
+              let best: SpiralCandidateResult | null = null;
+              for (const entry of results) {
+                if (isBetterPartial(entry, best)) {
+                  best = entry;
+                }
+              }
+
+              const winner = results.find((entry) => entry.bars.length >= 8) || null;
+              return {winner, best};
+            };
+
+            for (const ringRadius of SPIRAL_RADII_METERS) {
+              if (cancelled) return;
+              const ringPoints = buildSpiralPointsForRadius(
+                weightedCenter,
+                ringRadius,
+                currentSession.participants,
+                currentSession.excludedZones
+              );
+
+              const primaryPoints = ringPoints.filter((p) => !p.isPointExcluded);
+              const secondaryPoints = ringPoints.filter((p) => p.isPointExcluded);
+
+              const primaryRes = await probeGroup(primaryPoints);
+              if (cancelled) return;
+              if (primaryRes.best && isBetterPartial(primaryRes.best, bestPartialSpiral)) {
+                bestPartialSpiral = primaryRes.best;
+              }
+              winningSpiral = primaryRes.winner;
+
+              if (!winningSpiral) {
+                const secondaryRes = await probeGroup(secondaryPoints);
+                if (cancelled) return;
+                if (secondaryRes.best && isBetterPartial(secondaryRes.best, bestPartialSpiral)) {
+                  bestPartialSpiral = secondaryRes.best;
+                }
+                winningSpiral = secondaryRes.winner;
+              }
+
+              if (winningSpiral) {
+                break;
+              }
             }
 
             if (winningSpiral) {
-              break;
-            }
-          }
-
-          if (winningSpiral) {
-            effectiveCenter = {
-              lat: winningSpiral.point.lat,
-              lng: winningSpiral.point.lng,
-            };
-            filtered = winningSpiral.bars;
-            const kmLabel = (winningSpiral.point.radiusMeters / 1000)
-              .toFixed(1)
-              .replace('.0', '')
-              .replace('.', ',');
-            nextShiftNotice = `Point de recherche déplacé à ${kmLabel} km (${winningSpiral.point.directionLabel}) pour éviter les zones exclues.`;
-          } else if (filtered.length < 5) {
-            const fallbackAnchor =
-              bestPartialSpiral && bestPartialSpiral.bars.length > 0
-                ? {lat: bestPartialSpiral.point.lat, lng: bestPartialSpiral.point.lng}
-                : weightedCenter;
-            effectiveCenter = fallbackAnchor;
-            filtered = Object.values(allValidById).map((b) => ({
-              ...b,
-              distanceFromCenterMeters: haversineDistanceMeters(fallbackAnchor, {
-                lat: b.lat,
-                lng: b.lng,
-              }),
-            }));
-            if (bestPartialSpiral && bestPartialSpiral.bars.length > 0) {
-              const kmLabel = (bestPartialSpiral.point.radiusMeters / 1000)
+              effectiveCenter = {
+                lat: winningSpiral.point.lat,
+                lng: winningSpiral.point.lng,
+              };
+              filtered = winningSpiral.bars;
+              const kmLabel = (winningSpiral.point.radiusMeters / 1000)
                 .toFixed(1)
                 .replace('.0', '')
                 .replace('.', ',');
-              nextShiftNotice = `Point de recherche élargi à ${kmLabel} km (${bestPartialSpiral.point.directionLabel}) hors zones exclues.`;
+              nextShiftNotice = `Point de recherche déplacé à ${kmLabel} km (${winningSpiral.point.directionLabel}) pour éviter les zones exclues.`;
+            } else if (filtered.length < 5) {
+              const fallbackAnchor =
+                bestPartialSpiral && bestPartialSpiral.bars.length > 0
+                  ? {lat: bestPartialSpiral.point.lat, lng: bestPartialSpiral.point.lng}
+                  : weightedCenter;
+              effectiveCenter = fallbackAnchor;
+              filtered = Object.values(allValidById).map((b) => ({
+                ...b,
+                distanceFromCenterMeters: haversineDistanceMeters(fallbackAnchor, {
+                  lat: b.lat,
+                  lng: b.lng,
+                }),
+              }));
+              if (bestPartialSpiral && bestPartialSpiral.bars.length > 0) {
+                const kmLabel = (bestPartialSpiral.point.radiusMeters / 1000)
+                  .toFixed(1)
+                  .replace('.0', '')
+                  .replace('.', ',');
+                nextShiftNotice = `Point de recherche élargi à ${kmLabel} km (${bestPartialSpiral.point.directionLabel}) hors zones exclues.`;
+              }
             }
           }
+
+          candidatePool20 = [...filtered]
+            .sort((a, b) => a.distanceFromCenterMeters - b.distanceFromCenterMeters)
+            .slice(0, 20);
         }
 
-        const rankedCandidates = [...filtered].sort((a, b) => {
-          const score = (bar: BarCandidate) => {
-            const distPenalty = bar.distanceFromCenterMeters / 110;
-            const ratingBonus = (bar.rating ?? 3.8) * 1.6;
-            const openBonus = bar.isOpenAtTarget === false ? -4 : 1.5;
-            return ratingBonus + openBonus - distPenalty;
-          };
-          return score(b) - score(a);
-        });
-        const top8Bars = rankedCandidates.slice(0, 8);
-
-        if (top8Bars.length === 0) {
+        if (candidatePool20.length === 0) {
           onSearchComplete({
             bars: [],
             travelMatrix: {},
@@ -809,8 +898,9 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
 
         onSearchLoadingChange(false, true);
 
+        // 3. Compute real Google Routes (with LESS_WALKING for TRANSIT) on the 20 pre-selected bars
         const matrixResult: Record<string, Record<string, TravelTimeInfo>> = {};
-        for (const bar of top8Bars) {
+        for (const bar of candidatePool20) {
           matrixResult[bar.id] = {};
         }
 
@@ -818,7 +908,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
         const validTargetDate = Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
 
         const routeTasks: (() => Promise<void>)[] = [];
-        for (const bar of top8Bars) {
+        for (const bar of candidatePool20) {
           for (const participant of currentSession.participants) {
             routeTasks.push(async () => {
               const info = await computeDoorToDoorRoute(
@@ -833,48 +923,74 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
           }
         }
 
-        const stationByBarId: Record<string, string | null> = {};
-        const stationTasks = top8Bars.map((bar) => async () => {
-          try {
-            const res = await placesLib.Place.searchNearby({
-              fields: ['displayName'],
-              locationRestriction: {
-                center: {lat: bar.lat, lng: bar.lng},
-                radius: 350,
-              },
-              includedPrimaryTypes: ['subway_station', 'transit_station', 'train_station'],
-              maxResultCount: 1,
-              rankPreference: placesLib.SearchNearbyRankPreference.DISTANCE,
-              language: 'fr',
-              region: 'FR',
-              internalUsageAttributionIds: ['gmp_mcp_codeassist_v1_aistudio'],
-            });
-            const stationName = res.places?.[0]?.displayName?.trim();
-            if (stationName) {
-              stationByBarId[bar.id] = stationName;
-            }
-          } catch (err) {
-            if (isQuotaError(err)) {
-              window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-            }
-          }
+        await runInBatches(routeTasks, 8);
+        if (cancelled) return;
+
+        // 4. Rank all 20 candidates by strict inequity + maxWalkMinutes penalty and take Top 8
+        const sortedByStrictFairness = [...candidatePool20].sort((a, b) => {
+          const scoreA = computeBarFairnessMetrics(
+            a.id,
+            currentSession.participants,
+            matrixResult
+          ).score;
+          const scoreB = computeBarFairnessMetrics(
+            b.id,
+            currentSession.participants,
+            matrixResult
+          ).score;
+          if (scoreA !== scoreB) return scoreA - scoreB;
+          return a.distanceFromCenterMeters - b.distanceFromCenterMeters;
         });
 
-        await Promise.all([
-          runInBatches(routeTasks, 8),
-          runInBatches(stationTasks, 4),
-        ]);
+        const top8Bars = sortedByStrictFairness.slice(0, 8);
+        const top8Matrix: Record<string, Record<string, TravelTimeInfo>> = {};
+        for (const bar of top8Bars) {
+          top8Matrix[bar.id] = matrixResult[bar.id] || {};
+        }
 
-        if (cancelled) return;
+        // 5. Enrich nearest metro station only for Top 8 bars missing one
+        const stationByBarId: Record<string, string | null> = {};
+        const stationTasks = top8Bars
+          .filter((bar) => !bar.nearestStation)
+          .map((bar) => async () => {
+            try {
+              const res = await placesLib.Place.searchNearby({
+                fields: ['displayName'],
+                locationRestriction: {
+                  center: {lat: bar.lat, lng: bar.lng},
+                  radius: 350,
+                },
+                includedPrimaryTypes: ['subway_station', 'transit_station', 'train_station'],
+                maxResultCount: 1,
+                rankPreference: placesLib.SearchNearbyRankPreference.DISTANCE,
+                language: 'fr',
+                region: 'FR',
+                internalUsageAttributionIds: ['gmp_mcp_codeassist_v1_aistudio'],
+              });
+              const stationName = res.places?.[0]?.displayName?.trim();
+              if (stationName) {
+                stationByBarId[bar.id] = stationName;
+              }
+            } catch (err) {
+              if (isQuotaError(err)) {
+                window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+              }
+            }
+          });
+
+        if (stationTasks.length > 0) {
+          await runInBatches(stationTasks, 4);
+          if (cancelled) return;
+        }
 
         const enrichedTop8 = top8Bars.map((bar) => ({
           ...bar,
-          nearestStation: stationByBarId[bar.id] ?? null,
+          nearestStation: bar.nearestStation ?? stationByBarId[bar.id] ?? null,
         }));
 
         onSearchComplete({
           bars: enrichedTop8,
-          travelMatrix: matrixResult,
+          travelMatrix: top8Matrix,
           effectiveSearchCenter: effectiveCenter,
           shiftNotice: nextShiftNotice,
         });
@@ -907,6 +1023,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
     searchTriggerId,
     placesLib,
     routesLib,
+    getLocalBars,
     onSearchLoadingChange,
     onSearchError,
     onSearchComplete,
@@ -925,6 +1042,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
       onSelectBar={onSelectBar}
       votes={session.votes}
       customPrices={session.customPrices}
+      targetDateTime={session.dateTime}
       isDarkMode={isDarkMode}
       sheetSnap={sheetSnap}
       onMapReady={(m) => {
@@ -1025,6 +1143,25 @@ export default function App() {
     seq: number;
   } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const localBarsRef = useRef<LocalParisBarRecord[] | null>(null);
+  const localBarsPromiseRef = useRef<Promise<LocalParisBarRecord[]> | null>(null);
+
+  const getLocalBars = useCallback((): Promise<LocalParisBarRecord[]> => {
+    if (localBarsRef.current !== null) {
+      return Promise.resolve(localBarsRef.current);
+    }
+    if (!localBarsPromiseRef.current) {
+      localBarsPromiseRef.current = fetchLocalParisBars().then((records) => {
+        localBarsRef.current = records;
+        return records;
+      });
+    }
+    return localBarsPromiseRef.current;
+  }, []);
+
+  useEffect(() => {
+    void getLocalBars();
+  }, [getLocalBars]);
 
   const activeApiKey = customApiKey || ENV_API_KEY;
   const isDarkMode = themeMode === 'dark';
@@ -1106,12 +1243,13 @@ export default function App() {
           bar.lng,
           bar.postalCode,
           session.excludedZones,
-          bar.address
+          bar.address,
+          bar.arrondissement
         )
       ) {
         return false;
       }
-      if (onlyCheap && !isCheapBar(bar, session.customPrices[bar.id])) {
+      if (onlyCheap && !isCheapBar(bar, session.customPrices[bar.id], session.dateTime)) {
         return false;
       }
       if (onlyTopRated && (bar.rating ?? 0) < 4.3) {
@@ -1124,18 +1262,8 @@ export default function App() {
     });
 
     const getFairnessScore = (bar: BarCandidate): number => {
-      const row = travelMatrix[bar.id];
-      if (!row || session.participants.length === 0) {
-        return bar.distanceFromCenterMeters;
-      }
-      const durations = session.participants
-        .map((p) => row[p.id]?.durationSeconds)
-        .filter((d): d is number => typeof d === 'number');
-      if (durations.length === 0) return bar.distanceFromCenterMeters;
-      const max = Math.max(...durations);
-      const avg = durations.reduce((s, d) => s + d, 0) / durations.length;
-      const ratingBonusSec = ((bar.rating ?? 4.0) - 4.0) * 180;
-      return max + 0.35 * avg - ratingBonusSec;
+      const metrics = computeBarFairnessMetrics(bar.id, session.participants, travelMatrix);
+      return metrics.hasRoutes ? metrics.score : bar.distanceFromCenterMeters;
     };
 
     const copy = [...filtered];
@@ -1146,11 +1274,11 @@ export default function App() {
       }
 
       if (sortBy === 'price') {
-        const pintA = parseNumericPintPrice(session.customPrices[a.id]);
-        const pintB = parseNumericPintPrice(session.customPrices[b.id]);
-        const rankA = pintA !== null ? (pintA < 6 ? 0.5 : 1.5) : formatPriceLevel(a.priceLevel).numericRank;
-        const rankB = pintB !== null ? (pintB < 6 ? 0.5 : 1.5) : formatPriceLevel(b.priceLevel).numericRank;
-        if (rankA !== rankB) return rankA - rankB;
+        const effA = getEffectiveBarPintPrice(a, session.customPrices[a.id], session.dateTime);
+        const effB = getEffectiveBarPintPrice(b, session.customPrices[b.id], session.dateTime);
+        const rankA = effA.price !== null ? effA.price : formatPriceLevel(a.priceLevel).numericRank * 4;
+        const rankB = effB.price !== null ? effB.price : formatPriceLevel(b.priceLevel).numericRank * 4;
+        if (Math.abs(rankA - rankB) > 0.01) return rankA - rankB;
       }
 
       return getFairnessScore(a) - getFairnessScore(b);
@@ -1160,6 +1288,7 @@ export default function App() {
   }, [
     barsWithLiveHours,
     session.excludedZones,
+    session.dateTime,
     onlyCheap,
     onlyTopRated,
     onlyOpen,
@@ -1215,7 +1344,7 @@ export default function App() {
     setHasPendingChanges(false);
     setSelectedBarId(null);
     setActiveTab('bars');
-    setSheetSnap((prev) => (prev === 'low' ? 'mid' : prev));
+    setSheetSnap('mid');
   }, []);
 
   const handleTriggerSearch = () => {
@@ -1616,6 +1745,7 @@ export default function App() {
           searchTriggerId={searchTriggerId}
           isDarkMode={isDarkMode}
           sheetSnap={sheetSnap}
+          getLocalBars={getLocalBars}
           onSelectBar={handleSelectBarFromMap}
           onSearchLoadingChange={handleSearchLoadingChange}
           onSearchError={setBarsError}
@@ -1952,6 +2082,7 @@ export default function App() {
               travelMatrix={travelMatrix}
               votes={session.votes}
               customPrices={session.customPrices}
+              targetDateTime={session.dateTime}
               activeUserName={activeUserName}
               selectedBarId={selectedBarId}
               winningBarId={winningBar?.id || null}

@@ -19,7 +19,9 @@ import type {BarCandidate, ExcludedZones, Participant} from '../types/apero';
 import {
   buildCitymapperUrl,
   buildGoogleMapsUrl,
+  formatEuroPrice,
   formatPriceLevel,
+  getEffectiveBarPintPrice,
   isCheapBar,
 } from '../utils/geo';
 import type {SheetSnap} from './BottomSheet';
@@ -36,6 +38,7 @@ interface AperoMapProps {
   onSelectBar: (barId: string | null) => void;
   votes: Record<string, string[]>;
   customPrices: Record<string, string>;
+  targetDateTime: string;
   isDarkMode: boolean;
   sheetSnap: SheetSnap;
   onMapReady?: (map: google.maps.Map | null) => void;
@@ -92,8 +95,8 @@ const BoundsFitter: React.FC<{
       sheetSnap === 'high'
         ? Math.round(vh * 0.45)
         : sheetSnap === 'mid'
-        ? Math.round(vh * 0.54)
-        : Math.round(vh * 0.22);
+        ? Math.round(vh * 0.57)
+        : Math.round(vh * 0.23);
 
     const bounds = new coreLib.LatLngBounds();
     for (const pt of points) {
@@ -170,6 +173,7 @@ interface BarMarkerProps {
   isWinner: boolean;
   voteCount: number;
   customPrice?: string;
+  targetDateTime: string;
   onSelect: () => void;
   onClose: () => void;
 }
@@ -180,12 +184,14 @@ const BarMarker: React.FC<BarMarkerProps> = ({
   isWinner,
   voteCount,
   customPrice,
+  targetDateTime,
   onSelect,
   onClose,
 }) => {
   const [markerRef, marker] = useAdvancedMarkerRef();
   const priceInfo = formatPriceLevel(bar.priceLevel);
-  const cheap = isCheapBar(bar, customPrice);
+  const effectivePrice = getEffectiveBarPintPrice(bar, customPrice, targetDateTime);
+  const cheap = isCheapBar(bar, customPrice, targetDateTime);
 
   return (
     <>
@@ -253,12 +259,24 @@ const BarMarker: React.FC<BarMarkerProps> = ({
                 </span>
               )}
               <span aria-hidden="true">·</span>
-              <span>{priceInfo.label}</span>
-              {customPrice && (
+              {effectivePrice.price !== null ? (
+                <span
+                  className={`font-semibold tabular-nums ${
+                    effectivePrice.isHappyHour ? 'text-emerald-700' : 'text-neutral-900'
+                  }`}
+                >
+                  {effectivePrice.isHappyHour
+                    ? `HH ${formatEuroPrice(effectivePrice.price)}`
+                    : `Pinte ${formatEuroPrice(effectivePrice.price)}`}
+                </span>
+              ) : (
+                <span>{priceInfo.label}</span>
+              )}
+              {effectivePrice.happyHourSlotLabel && (
                 <>
                   <span aria-hidden="true">·</span>
-                  <span className="font-semibold text-emerald-700 tabular-nums">
-                    Pinte {customPrice} €
+                  <span className="text-[11px] text-emerald-700">
+                    {effectivePrice.happyHourSlotLabel}
                   </span>
                 </>
               )}
@@ -311,6 +329,7 @@ export const AperoMap: React.FC<AperoMapProps> = ({
   onSelectBar,
   votes,
   customPrices,
+  targetDateTime,
   isDarkMode,
   sheetSnap,
   onMapReady,
@@ -420,6 +439,7 @@ export const AperoMap: React.FC<AperoMapProps> = ({
             isWinner={winningBarId === bar.id}
             voteCount={(votes[bar.id] || []).length}
             customPrice={customPrices[bar.id]}
+            targetDateTime={targetDateTime}
             onSelect={() => onSelectBar(bar.id)}
             onClose={() => onSelectBar(null)}
           />
