@@ -29,7 +29,6 @@ export interface SessionState {
   dateTime: string;
   participants: Participant[];
   excludedZones: ExcludedZones;
-  votes: Record<string, string[]>;
   customPrices: Record<string, string>;
 }
 

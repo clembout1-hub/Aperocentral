@@ -1,9 +1,7 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import type {User as SupabaseUser} from '@supabase/supabase-js';
 import {
-  APILoadingStatus,
   APIProvider,
-  useApiLoadingStatus,
   useMapsLibrary,
 } from '@vis.gl/react-google-maps';
 import {
@@ -22,6 +20,7 @@ import {
   Settings,
   Sun,
   Trophy,
+  User,
 } from 'lucide-react';
 import {
   AccountAndFriendsModal,
@@ -133,14 +132,14 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   }
 }
 
-function isQuotaError(err: unknown): boolean {
+function isStrictQuotaErrorMessage(msg: string): boolean {
+  const upper = msg.toUpperCase();
+  return upper.includes('RESOURCE_EXHAUSTED') || upper.includes('OVER_QUERY_LIMIT');
+}
+
+function isStrictQuotaError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  return (
-    msg.includes('RESOURCE_EXHAUSTED') ||
-    msg.includes('OVER_QUERY_LIMIT') ||
-    msg.includes('429') ||
-    msg.includes('Quota')
-  );
+  return isStrictQuotaErrorMessage(msg);
 }
 
 function extractOpeningPeriods(
@@ -296,13 +295,18 @@ function sumWalkSeconds(
   return mode === 'WALKING' ? totalDurationSeconds : 0;
 }
 
+interface RouteComputationOutcome {
+  info: TravelTimeInfo;
+  isStrictQuotaError: boolean;
+}
+
 async function computeDoorToDoorRoute(
   routesLib: google.maps.RoutesLibrary | null,
   apiKey: string,
   participant: Participant,
   bar: BarCandidate,
   targetDepartureDate: Date | null
-): Promise<TravelTimeInfo> {
+): Promise<RouteComputationOutcome> {
   const nowMs = Date.now();
   const maxFutureMs = nowMs + 95 * 24 * 60 * 60 * 1000;
   const minTransitPastMs = nowMs - 6 * 24 * 60 * 60 * 1000;
@@ -318,6 +322,8 @@ async function computeDoorToDoorRoute(
       effectiveDeparture = targetDepartureDate;
     }
   }
+
+  let sawStrictQuotaError = false;
 
   if (routesLib?.Route?.computeRoutes) {
     try {
@@ -355,19 +361,22 @@ async function computeDoorToDoorRoute(
         const firstTransit = steps.find((st) => st.kind === 'TRANSIT' && st.lineBadge);
 
         return {
-          durationSeconds,
-          distanceMeters,
-          walkSeconds: sumWalkSeconds(steps, participant.mode, durationSeconds),
-          isEstimate: false,
-          transitLine: firstTransit?.lineBadge || null,
-          transitLineColor: firstTransit?.lineColor || null,
-          routeSummary: buildRouteSummary(participant.mode, steps, distanceMeters),
-          steps,
+          info: {
+            durationSeconds,
+            distanceMeters,
+            walkSeconds: sumWalkSeconds(steps, participant.mode, durationSeconds),
+            isEstimate: false,
+            transitLine: firstTransit?.lineBadge || null,
+            transitLineColor: firstTransit?.lineColor || null,
+            routeSummary: buildRouteSummary(participant.mode, steps, distanceMeters),
+            steps,
+          },
+          isStrictQuotaError: false,
         };
       }
     } catch (err) {
-      if (isQuotaError(err)) {
-        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+      if (isStrictQuotaError(err)) {
+        sawStrictQuotaError = true;
       }
     }
   }
@@ -422,50 +431,65 @@ async function computeDoorToDoorRoute(
           const firstTransit = steps.find((st) => st.kind === 'TRANSIT' && st.lineBadge);
 
           return {
-            durationSeconds: durationSec,
-            distanceMeters,
-            walkSeconds: sumWalkSeconds(steps, participant.mode, durationSec),
-            isEstimate: false,
-            transitLine: firstTransit?.lineBadge || null,
-            transitLineColor: firstTransit?.lineColor || null,
-            routeSummary: buildRouteSummary(participant.mode, steps, distanceMeters),
-            steps,
+            info: {
+              durationSeconds: durationSec,
+              distanceMeters,
+              walkSeconds: sumWalkSeconds(steps, participant.mode, durationSec),
+              isEstimate: false,
+              transitLine: firstTransit?.lineBadge || null,
+              transitLineColor: firstTransit?.lineColor || null,
+              routeSummary: buildRouteSummary(participant.mode, steps, distanceMeters),
+              steps,
+            },
+            isStrictQuotaError: false,
           };
         }
-      } else if (resp.status === 429) {
-        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+      } else {
+        const errBody = await resp.text().catch(() => '');
+        if (isStrictQuotaErrorMessage(errBody)) {
+          sawStrictQuotaError = true;
+        }
       }
-    } catch {
-      // Fall through to geometric estimate
+    } catch (err) {
+      if (isStrictQuotaError(err)) {
+        sawStrictQuotaError = true;
+      }
     }
   }
 
   const dist = haversineDistanceMeters(participant, bar);
   const estDuration = estimateTravelSeconds(dist, participant.mode);
   return {
-    durationSeconds: estDuration,
-    distanceMeters: Math.round(dist),
-    walkSeconds:
-      participant.mode === 'WALKING'
-        ? estDuration
-        : participant.mode === 'TRANSIT'
-        ? Math.round(estDuration * 0.2)
-        : 0,
-    isEstimate: true,
-    routeSummary: buildRouteSummary(participant.mode, [], dist),
-    steps: [],
+    info: {
+      durationSeconds: estDuration,
+      distanceMeters: Math.round(dist),
+      walkSeconds:
+        participant.mode === 'WALKING'
+          ? estDuration
+          : participant.mode === 'TRANSIT'
+          ? Math.round(estDuration * 0.2)
+          : 0,
+      isEstimate: true,
+      routeSummary: buildRouteSummary(participant.mode, [], dist),
+      steps: [],
+    },
+    isStrictQuotaError: sawStrictQuotaError,
   };
 }
 
 async function runInBatches<T>(
   tasks: (() => Promise<T>)[],
-  batchSize: number
+  batchSize: number,
+  delayMs = 0
 ): Promise<T[]> {
   const results: T[] = [];
   for (let i = 0; i < tasks.length; i += batchSize) {
     const slice = tasks.slice(i, i + batchSize);
     const chunk = await Promise.all(slice.map((fn) => fn()));
     results.push(...chunk);
+    if (delayMs > 0 && i + batchSize < tasks.length) {
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+    }
   }
   return results;
 }
@@ -516,7 +540,6 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
   onSearchComplete,
   onMapsReadyChange,
 }) => {
-  const loadingStatus = useApiLoadingStatus();
   const placesLib = useMapsLibrary('places');
   const routesLib = useMapsLibrary('routes');
   const executedTriggerRef = useRef<number>(0);
@@ -529,10 +552,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
 
   useEffect(() => {
     onMapsReadyChange(Boolean(placesLib));
-    if (loadingStatus === APILoadingStatus.AUTH_FAILURE) {
-      window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-    }
-  }, [loadingStatus, placesLib, onMapsReadyChange]);
+  }, [placesLib, onMapsReadyChange]);
 
   useEffect(() => {
     if (searchTriggerId <= 0) return;
@@ -717,7 +737,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
       try {
         let effectiveCenter = weightedCenter;
         let nextShiftNotice: string | null = null;
-        let candidatePool20: BarCandidate[] = [];
+        let candidatePool10: BarCandidate[] = [];
 
         // 1. Check priority local dataset (/bars-paris.json) within 8 km of weightedCenter (min 3 bars)
         const localRecords = await getLocalBars();
@@ -746,7 +766,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
           }
 
           if (selectedLocalPool.length > 0) {
-            candidatePool20 = selectedLocalPool.slice(0, 20);
+            candidatePool10 = selectedLocalPool.slice(0, 10);
             const centerExcluded = isPointInExcludedZones(
               weightedCenter.lat,
               weightedCenter.lng,
@@ -755,8 +775,8 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
             );
             if (centerExcluded) {
               effectiveCenter = {
-                lat: candidatePool20[0].lat,
-                lng: candidatePool20[0].lng,
+                lat: candidatePool10[0].lat,
+                lng: candidatePool10[0].lng,
               };
               nextShiftNotice =
                 'Point de recherche recentré hors des arrondissements/zones exclus.';
@@ -765,7 +785,7 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
         }
 
         // 2. Fallback to Google Places nearbySearch if outside Paris/petite couronne (< 3 local bars within 8 km)
-        if (candidatePool20.length === 0) {
+        if (candidatePool10.length === 0) {
           const initialRaw = await searchNearbyBars(weightedCenter);
           if (cancelled) return;
 
@@ -889,12 +909,12 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
             }
           }
 
-          candidatePool20 = [...filtered]
+          candidatePool10 = [...filtered]
             .sort((a, b) => a.distanceFromCenterMeters - b.distanceFromCenterMeters)
-            .slice(0, 20);
+            .slice(0, 10);
         }
 
-        if (candidatePool20.length === 0) {
+        if (candidatePool10.length === 0) {
           onSearchComplete({
             bars: [],
             travelMatrix: {},
@@ -907,36 +927,47 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
 
         onSearchLoadingChange(false, true);
 
-        // 3. Compute real Google Routes (with LESS_WALKING for TRANSIT) on the 20 pre-selected bars
+        // 3. Compute real Google Routes (with LESS_WALKING for TRANSIT) on the 10 pre-selected bars (5 at a time, 250ms pause)
         const matrixResult: Record<string, Record<string, TravelTimeInfo>> = {};
-        for (const bar of candidatePool20) {
+        for (const bar of candidatePool10) {
           matrixResult[bar.id] = {};
         }
 
         const parsedDate = new Date(currentSession.dateTime);
         const validTargetDate = Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
 
-        const routeTasks: (() => Promise<void>)[] = [];
-        for (const bar of candidatePool20) {
+        const routeTasks: (() => Promise<RouteComputationOutcome>)[] = [];
+        for (const bar of candidatePool10) {
           for (const participant of currentSession.participants) {
             routeTasks.push(async () => {
-              const info = await computeDoorToDoorRoute(
+              const outcome = await computeDoorToDoorRoute(
                 routesLib,
                 apiKey,
                 participant,
                 bar,
                 validTargetDate
               );
-              matrixResult[bar.id][participant.id] = info;
+              matrixResult[bar.id][participant.id] = outcome.info;
+              return outcome;
             });
           }
         }
 
-        await runInBatches(routeTasks, 8);
+        const routeOutcomes = await runInBatches(routeTasks, 5, 250);
         if (cancelled) return;
 
-        // 4. Rank all 20 candidates by strict inequity + maxWalkMinutes penalty and take Top 8
-        const sortedByStrictFairness = [...candidatePool20].sort((a, b) => {
+        // Show quota banner ONLY if 100% of route calculations failed with RESOURCE_EXHAUSTED or OVER_QUERY_LIMIT
+        const allRoutesStrictQuotaFailed =
+          routeOutcomes.length > 0 &&
+          routeOutcomes.every((o) => o.info.isEstimate && o.isStrictQuotaError);
+        window.dispatchEvent(
+          new CustomEvent('gmp-quota-status', {
+            detail: {exceeded: allRoutesStrictQuotaFailed},
+          })
+        );
+
+        // 4. Rank all 10 candidates by strict inequity + maxWalkMinutes penalty and take Top 8
+        const sortedByStrictFairness = [...candidatePool10].sort((a, b) => {
           const scoreA = computeBarFairnessMetrics(
             a.id,
             currentSession.participants,
@@ -980,15 +1011,13 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
               if (stationName) {
                 stationByBarId[bar.id] = stationName;
               }
-            } catch (err) {
-              if (isQuotaError(err)) {
-                window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-              }
+            } catch {
+              // Non-fatal enrichment failure
             }
           });
 
         if (stationTasks.length > 0) {
-          await runInBatches(stationTasks, 4);
+          await runInBatches(stationTasks, 4, 150);
           if (cancelled) return;
         }
 
@@ -1005,9 +1034,6 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
         });
       } catch (err) {
         if (cancelled) return;
-        if (isQuotaError(err)) {
-          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        }
         const exactError =
           err instanceof Error
             ? err.message
@@ -1049,7 +1075,6 @@ const MapsWorkspace: React.FC<MapsWorkspaceProps> = ({
       selectedBarId={selectedBarId}
       winningBarId={winningBarId}
       onSelectBar={onSelectBar}
-      votes={session.votes}
       customPrices={session.customPrices}
       targetDateTime={session.dateTime}
       isDarkMode={isDarkMode}
@@ -1073,37 +1098,19 @@ export default function App() {
     loadSessionsList()
   );
 
-  const [activeSessionId, setActiveSessionId] = useState<string>(() => {
-    if (initialUrlSessionRef.current) {
-      return createSessionId();
-    }
-    const storedActiveId = loadActiveSessionId();
-    const list = loadSessionsList();
-    if (storedActiveId && list.some((s) => s.id === storedActiveId)) {
-      return storedActiveId;
-    }
-    if (list.length > 0) {
-      return list[0].id;
-    }
-    return createSessionId();
-  });
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => createSessionId());
 
-  const [session, setSession] = useState<SessionState>(() => {
-    if (initialUrlSessionRef.current) {
-      return initialUrlSessionRef.current;
-    }
-    const storedActiveId = loadActiveSessionId();
-    const list = loadSessionsList();
-    const matched =
-      (storedActiveId && list.find((s) => s.id === storedActiveId)) || list[0];
-    return matched ? matched.session : createDefaultSession();
-  });
+  const [session, setSession] = useState<SessionState>(() =>
+    initialUrlSessionRef.current ? initialUrlSessionRef.current : createDefaultSession()
+  );
 
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadThemeMode());
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [accountModalTab, setAccountModalTab] = useState<AccountFriendsModalTab>('profile');
   const [isSessionsDrawerOpen, setIsSessionsDrawerOpen] = useState(false);
   const [isExclusionsModalOpen, setIsExclusionsModalOpen] = useState(false);
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+  const headerMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [sheetSnap, setSheetSnap] = useState<SheetSnap>('mid');
   const [activeTab, setActiveTab] = useState<SheetTab>(() =>
@@ -1145,7 +1152,6 @@ export default function App() {
   const [onlyCheap, setOnlyCheap] = useState(false);
   const [onlyTopRated, setOnlyTopRated] = useState(false);
   const [onlyOpen, setOnlyOpen] = useState(false);
-  const [activeUserName, setActiveUserName] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const localBarsRef = useRef<LocalParisBarRecord[] | null>(null);
   const localBarsPromiseRef = useRef<Promise<LocalParisBarRecord[]> | null>(null);
@@ -1178,9 +1184,6 @@ export default function App() {
     try {
       const ensured = await ensureMyProfile(user);
       setProfile(ensured);
-      if (ensured?.username) {
-        setActiveUserName(ensured.username);
-      }
 
       const [nextFriendships, nextGroups] = await Promise.all([
         fetchMyFriendships(user.id),
@@ -1217,12 +1220,6 @@ export default function App() {
     };
   }, [refreshSupabaseUserData]);
 
-  useEffect(() => {
-    if (profile?.username) {
-      setActiveUserName(profile.username);
-    }
-  }, [profile?.username]);
-
   const pendingInvitesCount = useMemo(
     () =>
       profile
@@ -1248,10 +1245,35 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => {
-    const handler = () => setQuotaExceeded(true);
-    window.addEventListener('gmp-quota-exceeded', handler);
-    return () => window.removeEventListener('gmp-quota-exceeded', handler);
+    const handler = (event: Event) => {
+      const custom = event as CustomEvent<{exceeded?: boolean}>;
+      setQuotaExceeded(Boolean(custom.detail?.exceeded));
+    };
+    window.addEventListener('gmp-quota-status', handler);
+    return () => window.removeEventListener('gmp-quota-status', handler);
   }, []);
+
+  useEffect(() => {
+    if (!isHeaderMenuOpen) return;
+    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+      if (headerMenuRef.current && !headerMenuRef.current.contains(e.target as Node)) {
+        setIsHeaderMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsHeaderMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isHeaderMenuOpen]);
 
   useEffect(() => {
     syncSessionToUrl(session);
@@ -1366,20 +1388,10 @@ export default function App() {
     session.customPrices,
   ]);
 
-  const winningBar = useMemo(() => {
-    if (filteredAndSortedBars.length === 0) return null;
-    let bestBar = filteredAndSortedBars[0];
-    let bestVotes = (session.votes[bestBar.id] || []).length;
-
-    for (const bar of filteredAndSortedBars) {
-      const count = (session.votes[bar.id] || []).length;
-      if (count > bestVotes) {
-        bestVotes = count;
-        bestBar = bar;
-      }
-    }
-    return bestBar;
-  }, [filteredAndSortedBars, session.votes]);
+  const winningBar = useMemo(
+    () => (filteredAndSortedBars.length > 0 ? filteredAndSortedBars[0] : null),
+    [filteredAndSortedBars]
+  );
 
   // Synchronize Map marker tap <-> Bottom Sheet tab, mid snap & scrollIntoView
   const handleSelectBarFromMap = useCallback(
@@ -1462,6 +1474,37 @@ export default function App() {
     setAccountModalTab(tab);
     setIsAccountModalOpen(true);
   }, []);
+
+  const handleAddSelf = useCallback(() => {
+    if (!profile) {
+      openAccountModal('profile');
+      return;
+    }
+    const addr = profile.default_address?.trim() || '';
+    const hasCoords =
+      Boolean(addr) &&
+      typeof profile.default_lat === 'number' &&
+      Number.isFinite(profile.default_lat) &&
+      typeof profile.default_lng === 'number' &&
+      Number.isFinite(profile.default_lng) &&
+      (profile.default_lat !== 0 || profile.default_lng !== 0);
+
+    if (!hasCoords) {
+      openAccountModal('profile');
+      showToast("Renseigne d'abord ton adresse par défaut dans Mon Profil");
+      return;
+    }
+
+    handleUpsertParticipant({
+      id: `self_${profile.id}`,
+      name: profile.username,
+      address: addr,
+      lat: profile.default_lat!,
+      lng: profile.default_lng!,
+      mode: profile.default_mode || 'TRANSIT',
+    });
+    showToast(`${profile.username} ajouté(e) !`);
+  }, [handleUpsertParticipant, openAccountModal, profile, showToast]);
 
   const handleLaunchSharedGroup = useCallback(
     (group: SharedGroupWithMembers) => {
@@ -1594,27 +1637,6 @@ export default function App() {
     if (hasSearchedOnce) setHasPendingChanges(true);
   }, [hasSearchedOnce]);
 
-  const handleToggleVote = useCallback(
-    (barId: string) => {
-      const voter = activeUserName.trim() || session.participants[0]?.name || 'Moi';
-      setSession((prev) => {
-        const current = prev.votes[barId] || [];
-        const exists = current.some((v) => v.toLowerCase() === voter.toLowerCase());
-        const nextForBar = exists
-          ? current.filter((v) => v.toLowerCase() !== voter.toLowerCase())
-          : [...current, voter];
-        return {
-          ...prev,
-          votes: {
-            ...prev.votes,
-            [barId]: nextForBar,
-          },
-        };
-      });
-    },
-    [activeUserName, session.participants]
-  );
-
   const handleCreateNewSession = useCallback(() => {
     const freshId = createSessionId();
     const fresh = createDefaultSession();
@@ -1666,9 +1688,9 @@ export default function App() {
 
   const shareUrl = useMemo(() => buildShareUrl(session), [session]);
 
-  const voteMessage = useMemo(() => {
+  const inviteMessage = useMemo(() => {
     const title = session.title.trim() || 'ApéroCentral';
-    return `🍻 Rejoins « ${title} » et ajoute ton trajet :\n${shareUrl}`;
+    return `🍻 Rejoins « ${title} » sur ApéroCentral et ajoute ton point de départ :\n${shareUrl}`;
   }, [session.title, shareUrl]);
 
   const recapMessage = useMemo(() => {
@@ -1722,10 +1744,16 @@ export default function App() {
   };
 
   const handleSaveApiKey = (newKey: string) => {
-    saveCustomApiKey(newKey);
-    setCustomApiKey(newKey);
+    const hadCustomKey = Boolean(customApiKey.trim());
+    const trimmed = newKey.trim();
+    saveCustomApiKey(trimmed);
+    setCustomApiKey(trimmed);
     setQuotaExceeded(false);
-    showToast(newKey ? 'Clé Google Maps enregistrée' : 'Clé personnalisée effacée');
+    if (trimmed) {
+      showToast('Clé personnelle Google Maps enregistrée');
+    } else if (hadCustomKey) {
+      showToast('Clé personnelle supprimée · Clé serveur active par défaut');
+    }
   };
 
   const summaryText = useMemo(() => {
@@ -1789,31 +1817,30 @@ export default function App() {
         </div>
       )}
 
-      {/* Quota Banner (if triggered) */}
+      {/* Quota Banner (only if 100% of route calculations fail with RESOURCE_EXHAUSTED / OVER_QUERY_LIMIT) */}
       {quotaExceeded && (
-        <div className="fixed top-0 inset-x-0 z-50 bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2 text-xs text-center shadow-sm">
+        <div className="fixed top-0 inset-x-0 z-50 border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-900 shadow-sm">
           <span>
-            Google Maps Platform quota reached. Visit{' '}
-            <a
-              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline font-semibold text-amber-950"
+            Quota API Google Maps dépassé pour tous les trajets. Réessaie dans un instant ou ajoute une clé de secours dans{' '}
+            <button
+              type="button"
+              onClick={() => setIsApiKeyModalOpen(true)}
+              className="font-semibold text-amber-950 underline"
             >
-              maps developer site
-            </a>{' '}
-            for instructions.
+              Clé API
+            </button>
+            .
           </span>
         </div>
       )}
 
       <OfflineIndicator />
 
-      {/* 2. Floating Frosted Apple Maps Header */}
+      {/* 2. Floating Frosted Apple Maps Header (Focused: Title + Compte & Groupes + Exclusions + Settings Menu) */}
       <header className="fixed top-0 left-0 right-0 z-30 pt-safe pointer-events-none">
         <div className="pointer-events-auto mx-3 mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-header)] px-3.5 py-2 shadow-lg backdrop-blur-xl lg:mx-4">
           {/* Left: Editable Title + Interactive Date/Time Pill */}
-          <div className="flex min-w-[155px] flex-1 items-center gap-2">
+          <div className="flex min-w-[140px] flex-1 items-center gap-2">
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#FF9F0A]/15 text-[#FF9F0A]">
               <Beer className="h-4 w-4" aria-hidden="true" />
             </span>
@@ -1893,20 +1920,22 @@ export default function App() {
             </div>
           </div>
 
-          {/* Right: Compact Action Controls */}
+          {/* Right: Compte & Groupes + Exclusions + Secondary Settings Menu */}
           <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              onClick={() => setIsSessionsDrawerOpen(true)}
-              aria-label="Mes soirées"
-              title="Mes soirées"
-              className="inline-flex min-h-[34px] items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--text-primary)] transition-colors hover:border-[#0A84FF]/50 whitespace-nowrap"
+              onClick={() => openAccountModal('profile')}
+              aria-label="Compte & Groupes"
+              title="Compte & Groupes"
+              className="relative inline-flex min-h-[34px] items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-2.5 py-1 text-xs font-semibold text-[var(--text-primary)] transition-colors hover:border-[#0A84FF]/50 whitespace-nowrap"
             >
-              <FolderHeart className="h-3.5 w-3.5 text-[#0A84FF]" aria-hidden="true" />
-              <span className="hidden sm:inline">Mes soirées</span>
-              {savedSessions.length > 0 && (
-                <span className="rounded-full bg-[#0A84FF]/20 px-1.5 py-0.5 text-[10px] font-bold text-[#0A84FF] tabular-nums">
-                  {savedSessions.length}
+              <User className="h-3.5 w-3.5 text-[#0A84FF]" aria-hidden="true" />
+              <span className="max-w-[96px] truncate sm:max-w-[130px]">
+                {profile?.username || 'Compte & Groupes'}
+              </span>
+              {pendingInvitesCount > 0 && (
+                <span className="rounded-full bg-[#FF453A] px-1.5 py-0.5 text-[10px] font-bold text-white tabular-nums">
+                  {pendingInvitesCount}
                 </span>
               )}
             </button>
@@ -1923,7 +1952,7 @@ export default function App() {
               }`}
             >
               <Ban className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              <span className="hidden md:inline">Exclusions</span>
+              <span className="hidden sm:inline">Exclusions</span>
               {excludedCount > 0 && (
                 <span className="rounded-full bg-[#FF453A] px-1.5 py-0.5 text-[10px] font-bold text-white tabular-nums">
                   {excludedCount}
@@ -1931,31 +1960,89 @@ export default function App() {
               )}
             </button>
 
-            <PWAInstallButton />
+            {/* Secondary Settings Menu (Mes soirées, Theme, API Key, PWA Install) */}
+            <div ref={headerMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setIsHeaderMenuOpen((prev) => !prev)}
+                aria-expanded={isHeaderMenuOpen}
+                aria-haspopup="menu"
+                aria-label="Options et réglages"
+                title="Options et réglages"
+                className="inline-flex h-[34px] w-[34px] items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] transition-colors hover:border-[#0A84FF]/50 hover:text-[var(--text-primary)]"
+              >
+                <Settings className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
 
-            <button
-              type="button"
-              onClick={() => setThemeMode((prev) => (prev === 'dark' ? 'light' : 'dark'))}
-              aria-label={isDarkMode ? 'Passer en mode jour' : 'Passer en mode nuit'}
-              title={isDarkMode ? 'Mode Nuit (passer en Jour)' : 'Mode Jour (passer en Nuit)'}
-              className="inline-flex h-[34px] w-[34px] items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] transition-colors hover:border-[#0A84FF]/50"
-            >
-              {isDarkMode ? (
-                <Moon className="h-3.5 w-3.5 text-[#0A84FF]" aria-hidden="true" />
-              ) : (
-                <Sun className="h-3.5 w-3.5 text-[#FF9F0A]" aria-hidden="true" />
+              {isHeaderMenuOpen && (
+                <div
+                  role="menu"
+                  aria-label="Options et réglages"
+                  className="absolute right-0 mt-2 w-60 origin-top-right space-y-1 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card-strong)] p-1.5 shadow-2xl backdrop-blur-2xl"
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setIsHeaderMenuOpen(false);
+                      setIsSessionsDrawerOpen(true);
+                    }}
+                    className="flex min-h-[42px] w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs font-semibold text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-hover)]"
+                  >
+                    <span className="flex items-center gap-2">
+                      <FolderHeart className="h-4 w-4 text-[#0A84FF]" aria-hidden="true" />
+                      <span>Mes soirées</span>
+                    </span>
+                    {savedSessions.length > 0 && (
+                      <span className="rounded-full bg-[#0A84FF]/15 px-2 py-0.5 text-[11px] font-bold text-[#0A84FF] tabular-nums">
+                        {savedSessions.length}
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setThemeMode((prev) => (prev === 'dark' ? 'light' : 'dark'));
+                      setIsHeaderMenuOpen(false);
+                    }}
+                    className="flex min-h-[42px] w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs font-semibold text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-hover)]"
+                  >
+                    <span className="flex items-center gap-2">
+                      {isDarkMode ? (
+                        <Sun className="h-4 w-4 text-[#FF9F0A]" aria-hidden="true" />
+                      ) : (
+                        <Moon className="h-4 w-4 text-[#0A84FF]" aria-hidden="true" />
+                      )}
+                      <span>{isDarkMode ? 'Passer en mode jour' : 'Passer en mode nuit'}</span>
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setIsHeaderMenuOpen(false);
+                      setIsApiKeyModalOpen(true);
+                    }}
+                    className="flex min-h-[42px] w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs font-semibold text-[var(--text-primary)] transition-colors hover:bg-[var(--bg-surface-hover)]"
+                  >
+                    <span className="flex items-center gap-2">
+                      <KeyRound className="h-4 w-4 text-[var(--text-secondary)]" aria-hidden="true" />
+                      <span>Clé API Google Maps</span>
+                    </span>
+                    {customApiKey.trim() && (
+                      <span className="text-[10px] font-semibold text-[#30D158]">Perso</span>
+                    )}
+                  </button>
+
+                  <div className="empty:hidden border-t border-[var(--border-subtle)] px-2 pt-1.5 pb-1">
+                    <PWAInstallButton />
+                  </div>
+                </div>
               )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setIsApiKeyModalOpen(true)}
-              aria-label="Paramètres clé API Google Maps"
-              title="Paramètres clé API Google Maps"
-              className="inline-flex h-[34px] w-[34px] items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
-            >
-              <Settings className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
+            </div>
           </div>
         </div>
       </header>
@@ -1969,13 +2056,10 @@ export default function App() {
         participantsCount={session.participants.length}
         barsCount={filteredAndSortedBars.length}
         summaryText={summaryText}
-        connectedUsername={profile?.username || null}
-        pendingInvitesCount={pendingInvitesCount}
-        onOpenAccountModal={() => openAccountModal('profile')}
         scrollContainerRef={sheetScrollRef}
         footer={
           <MessengerShareBar
-            voteMessage={voteMessage}
+            inviteMessage={inviteMessage}
             recapMessage={recapMessage}
             shareUrl={shareUrl}
             canCopyRecap={Boolean(winningBar)}
@@ -1993,11 +2077,12 @@ export default function App() {
             <ParticipantManager
               participants={session.participants}
               isAuthenticated={Boolean(authUser && profile)}
+              currentUserProfile={profile}
               groups={sharedGroups}
               mapsReady={Boolean(activeApiKey) && mapsReady}
               onUpsertParticipant={handleUpsertParticipant}
               onRemoveParticipant={handleRemoveParticipant}
-              onSetActiveUserName={setActiveUserName}
+              onAddSelf={handleAddSelf}
               onLaunchGroup={handleLaunchSharedGroup}
               onOpenGroupsModal={() => openAccountModal('groups')}
             />
@@ -2051,7 +2136,7 @@ export default function App() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-[#0A84FF]">
                       <Trophy className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                      <span>QG retenu</span>
+                      <span>Meilleur QG</span>
                     </div>
                     <p className="truncate text-sm font-semibold tracking-tight text-[var(--text-primary)]">
                       {winningBar.name}
@@ -2088,10 +2173,8 @@ export default function App() {
               totalBarsBeforeFilter={barsWithLiveHours.length}
               participants={session.participants}
               travelMatrix={travelMatrix}
-              votes={session.votes}
               customPrices={session.customPrices}
               targetDateTime={session.dateTime}
-              activeUserName={activeUserName}
               selectedBarId={selectedBarId}
               winningBarId={winningBar?.id || null}
               sortBy={sortBy}
@@ -2119,7 +2202,6 @@ export default function App() {
                 setOnlyOpen(false);
               }}
               onSelectBar={(id) => setSelectedBarId(id)}
-              onToggleVote={handleToggleVote}
               onAddToCalendar={(bar) => downloadIcsFile(session, bar)}
             />
           </>
@@ -2151,9 +2233,6 @@ export default function App() {
         onRefreshData={() => refreshSupabaseUserData(authUser)}
         onProfileUpdated={(nextProfile) => {
           setProfile(nextProfile);
-          if (nextProfile?.username) {
-            setActiveUserName(nextProfile.username);
-          }
         }}
         onLaunchGroup={handleLaunchSharedGroup}
         onShowToast={showToast}

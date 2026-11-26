@@ -11,10 +11,10 @@ import {
 } from 'lucide-react';
 import {buildWhatsAppUrl} from '../utils/geo';
 
-export type ShareSheetMode = 'vote' | 'recap';
+export type ShareSheetMode = 'invite' | 'recap';
 
 interface MessengerShareBarProps {
-  voteMessage: string;
+  inviteMessage: string;
   recapMessage: string | null;
   shareUrl: string;
   canCopyRecap: boolean;
@@ -25,7 +25,7 @@ interface MessengerShareBarProps {
 }
 
 export const MessengerShareBar: React.FC<MessengerShareBarProps> = ({
-  voteMessage,
+  inviteMessage,
   recapMessage,
   shareUrl,
   canCopyRecap,
@@ -35,12 +35,12 @@ export const MessengerShareBar: React.FC<MessengerShareBarProps> = ({
   onAddCalendar,
 }) => {
   const [isSheetOpen, setIsSheetOpen] = useState(false);
-  const [sheetMode, setSheetMode] = useState<ShareSheetMode>('vote');
+  const [sheetMode, setSheetMode] = useState<ShareSheetMode>('invite');
   const [justCopied, setJustCopied] = useState(false);
 
   const openActionSheet = () => {
     onSyncUrl();
-    setSheetMode(canCopyRecap && recapMessage ? 'recap' : 'vote');
+    setSheetMode(canCopyRecap && recapMessage ? 'recap' : 'invite');
     setJustCopied(false);
     setIsSheetOpen(true);
   };
@@ -64,7 +64,7 @@ export const MessengerShareBar: React.FC<MessengerShareBarProps> = ({
 
   const isRecapMissing = sheetMode === 'recap' && (!canCopyRecap || !recapMessage);
   const activeMessage =
-    sheetMode === 'recap' ? recapMessage || '' : voteMessage;
+    sheetMode === 'recap' ? recapMessage || '' : inviteMessage;
 
   const handleCopyAction = () => {
     if (isRecapMissing || !activeMessage) return;
@@ -73,7 +73,7 @@ export const MessengerShareBar: React.FC<MessengerShareBarProps> = ({
       activeMessage,
       sheetMode === 'recap'
         ? 'Récapitulatif copié !'
-        : 'Lien de vote copié !'
+        : "Lien d'invitation copié !"
     );
     setJustCopied(true);
   };
@@ -131,23 +131,23 @@ export const MessengerShareBar: React.FC<MessengerShareBarProps> = ({
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={sheetMode === 'vote'}
+                  aria-selected={sheetMode === 'invite'}
                   onClick={() => {
-                    setSheetMode('vote');
+                    setSheetMode('invite');
                     setJustCopied(false);
                   }}
                   className={`min-h-[40px] rounded-lg px-2.5 py-1.5 text-center transition-all ${
-                    sheetMode === 'vote'
+                    sheetMode === 'invite'
                       ? 'bg-[#0A84FF] text-white shadow-sm'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                   }`}
                 >
                   <span className="block text-xs font-semibold whitespace-nowrap">
-                    Lien de vote
+                    Lien d&apos;invitation
                   </span>
                   <span
                     className={`block text-[10px] whitespace-nowrap ${
-                      sheetMode === 'vote' ? 'text-white/85' : 'text-[var(--text-secondary)]'
+                      sheetMode === 'invite' ? 'text-white/85' : 'text-[var(--text-secondary)]'
                     }`}
                   >
                     Inviter les amis
@@ -176,7 +176,7 @@ export const MessengerShareBar: React.FC<MessengerShareBarProps> = ({
                       sheetMode === 'recap' ? 'text-white/85' : 'text-[var(--text-secondary)]'
                     }`}
                   >
-                    Bar gagnant + trajets
+                    Meilleur QG + trajets
                   </span>
                 </button>
               </div>
@@ -190,7 +190,7 @@ export const MessengerShareBar: React.FC<MessengerShareBarProps> = ({
                 </div>
                 {isRecapMissing ? (
                   <p className="py-2 text-xs leading-relaxed text-[var(--text-secondary)]">
-                    Lance d&apos;abord une recherche de bars pour générer le récapitulatif final avec le bar gagnant et les temps de trajet de chacun.
+                    Lance d&apos;abord une recherche de bars pour générer le récapitulatif final avec le meilleur QG et les temps de trajet de chacun.
                   </p>
                 ) : (
                   <pre className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-[var(--text-primary)]">

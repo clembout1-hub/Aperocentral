@@ -47,7 +47,6 @@ export function createDefaultSession(): SessionState {
       postalCodeLabels: {},
       customZones: [],
     },
-    votes: {},
     customPrices: {},
   };
 }
@@ -144,15 +143,6 @@ export function sanitizeSession(raw: unknown): SessionState | null {
         .filter((p) => p.name.length > 0 && (p.lat !== 0 || p.lng !== 0))
     : [];
 
-  const votes: Record<string, string[]> = {};
-  if (data.votes && typeof data.votes === 'object' && !Array.isArray(data.votes)) {
-    for (const [placeId, voters] of Object.entries(data.votes as Record<string, unknown>)) {
-      if (Array.isArray(voters)) {
-        votes[placeId] = voters.filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
-      }
-    }
-  }
-
   const customPrices: Record<string, string> = {};
   if (data.customPrices && typeof data.customPrices === 'object' && !Array.isArray(data.customPrices)) {
     for (const [placeId, price] of Object.entries(data.customPrices as Record<string, unknown>)) {
@@ -167,7 +157,6 @@ export function sanitizeSession(raw: unknown): SessionState | null {
     dateTime: typeof data.dateTime === 'string' && data.dateTime ? data.dateTime : getDefaultDateTimeLocal(),
     participants,
     excludedZones: sanitizeExcludedZones(data.excludedZones),
-    votes,
     customPrices,
   };
 }
@@ -221,7 +210,6 @@ export function isSessionEffectivelyDefault(session: SessionState): boolean {
   return (
     session.participants.length === 0 &&
     !hasExclusions &&
-    Object.keys(session.votes).length === 0 &&
     Object.keys(session.customPrices).length === 0 &&
     session.title === 'Apéro de la Team' &&
     session.dateTime === INITIAL_DEFAULT_DATETIME

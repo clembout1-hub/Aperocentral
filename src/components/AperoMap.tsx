@@ -36,7 +36,6 @@ interface AperoMapProps {
   selectedBarId: string | null;
   winningBarId: string | null;
   onSelectBar: (barId: string | null) => void;
-  votes: Record<string, string[]>;
   customPrices: Record<string, string>;
   targetDateTime: string;
   isDarkMode: boolean;
@@ -171,7 +170,6 @@ interface BarMarkerProps {
   bar: BarCandidate;
   isSelected: boolean;
   isWinner: boolean;
-  voteCount: number;
   customPrice?: string;
   targetDateTime: string;
   onSelect: () => void;
@@ -182,7 +180,6 @@ const BarMarker: React.FC<BarMarkerProps> = ({
   bar,
   isSelected,
   isWinner,
-  voteCount,
   customPrice,
   targetDateTime,
   onSelect,
@@ -225,16 +222,7 @@ const BarMarker: React.FC<BarMarkerProps> = ({
             }`}
             aria-hidden="true"
           />
-          <span className="max-w-[88px] truncate">{bar.name}</span>
-          {voteCount > 0 && (
-            <span
-              className={`rounded-full px-1.5 text-[10px] font-bold tabular-nums ${
-                isSelected ? 'bg-black/15 text-black' : 'bg-white/15 text-white'
-              }`}
-            >
-              {voteCount}
-            </span>
-          )}
+          <span className="max-w-[96px] truncate">{bar.name}</span>
         </div>
       </AdvancedMarker>
 
@@ -327,7 +315,6 @@ export const AperoMap: React.FC<AperoMapProps> = ({
   selectedBarId,
   winningBarId,
   onSelectBar,
-  votes,
   customPrices,
   targetDateTime,
   isDarkMode,
@@ -437,7 +424,6 @@ export const AperoMap: React.FC<AperoMapProps> = ({
             bar={bar}
             isSelected={selectedBar?.id === bar.id}
             isWinner={winningBarId === bar.id}
-            voteCount={(votes[bar.id] || []).length}
             customPrice={customPrices[bar.id]}
             targetDateTime={targetDateTime}
             onSelect={() => onSelectBar(bar.id)}

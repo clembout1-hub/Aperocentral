@@ -2,7 +2,6 @@ import React, {useState} from 'react';
 import {
   Beer,
   CalendarPlus,
-  Check,
   ChevronDown,
   ChevronUp,
   Clock,
@@ -16,7 +15,6 @@ import {
   Search,
   Star,
   Tag,
-  ThumbsUp,
   TrainFront,
   Trophy,
 } from 'lucide-react';
@@ -39,10 +37,8 @@ interface BarListProps {
   totalBarsBeforeFilter: number;
   participants: Participant[];
   travelMatrix: Record<string, Record<string, TravelTimeInfo>>; // barId -> participantId -> info
-  votes: Record<string, string[]>;
   customPrices: Record<string, string>;
   targetDateTime: string;
-  activeUserName: string;
   selectedBarId: string | null;
   winningBarId: string | null;
   sortBy: SortCriterion;
@@ -62,7 +58,6 @@ interface BarListProps {
   onToggleOpenFilter: () => void;
   onResetFilters: () => void;
   onSelectBar: (barId: string) => void;
-  onToggleVote: (barId: string) => void;
   onAddToCalendar: (bar: BarCandidate) => void;
 }
 
@@ -73,10 +68,8 @@ export const BarList: React.FC<BarListProps> = ({
   totalBarsBeforeFilter,
   participants,
   travelMatrix,
-  votes,
   customPrices,
   targetDateTime,
-  activeUserName,
   selectedBarId,
   winningBarId,
   sortBy,
@@ -96,13 +89,10 @@ export const BarList: React.FC<BarListProps> = ({
   onToggleOpenFilter,
   onResetFilters,
   onSelectBar,
-  onToggleVote,
   onAddToCalendar,
 }) => {
-  const voterKey = activeUserName.trim() || participants[0]?.name || 'Moi';
   const [openNavBarId, setOpenNavBarId] = useState<string | null>(null);
   const [openStepsBarId, setOpenStepsBarId] = useState<string | null>(null);
-  const [brokenImages, setBrokenImages] = useState<Record<string, boolean>>({});
 
   const isAllActive = !onlyCheap && !onlyTopRated && !onlyOpen;
 
@@ -148,7 +138,7 @@ export const BarList: React.FC<BarListProps> = ({
         </div>
       </div>
 
-      {/* Filter Pills: Tous (8), Pas cher (€), Top notes (4.3+), Ouvert */}
+      {/* Filter Pills */}
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
@@ -283,15 +273,11 @@ export const BarList: React.FC<BarListProps> = ({
         </div>
       )}
 
-      {/* Apple Maps Style Bar Cards */}
+      {/* Streamlined Bar Cards */}
       {!isLoadingBars && bars.length > 0 && (
         <div className="space-y-3">
           {bars.map((bar, idx) => {
             const barTimes = travelMatrix[bar.id] || {};
-            const barVotes = votes[bar.id] || [];
-            const hasVoted = barVotes.some(
-              (v) => v.toLowerCase() === voterKey.toLowerCase()
-            );
             const isWinner = winningBarId === bar.id;
             const isSelected = selectedBarId === bar.id;
             const priceInfo = formatPriceLevel(bar.priceLevel);
@@ -301,7 +287,6 @@ export const BarList: React.FC<BarListProps> = ({
               targetDateTime
             );
             const cheapHighlight = isCheapBar(bar, customPrices[bar.id], targetDateTime);
-            const hasCoverImage = Boolean(bar.coverImageUrl && !brokenImages[bar.id]);
             const isNavOpen = openNavBarId === bar.id;
             const isStepsOpen = openStepsBarId === bar.id;
 
@@ -319,14 +304,13 @@ export const BarList: React.FC<BarListProps> = ({
             const maxMinutes =
               durations.length > 0 ? Math.round(Math.max(...durations) / 60) : null;
 
-            const badgeLabel = effectivePrice.isHappyHour
+            const activePriceLabel = effectivePrice.isHappyHour
               ? `HH ${formatEuroPrice(effectivePrice.price!)}`
               : effectivePrice.price !== null
               ? formatEuroPrice(effectivePrice.price)
               : priceInfo.label;
 
             const isLocalSource = bar.source === 'local';
-
             const hhStartFormatted = formatTimeFrench(bar.happyHourStart);
             const hhEndFormatted = formatTimeFrench(bar.happyHourEnd);
             const hhRangeLabel =
@@ -334,20 +318,18 @@ export const BarList: React.FC<BarListProps> = ({
                 ? `${hhStartFormatted}–${hhEndFormatted}`
                 : null;
 
-            const priceDetailsParts: string[] = [];
+            const hhSubLineParts: string[] = [];
             if (hhRangeLabel && effectivePrice.happyHourPrice !== null) {
-              priceDetailsParts.push(
-                `HH ${hhRangeLabel} : ${formatEuroPrice(effectivePrice.happyHourPrice)}`
+              hhSubLineParts.push(
+                `HH ${hhRangeLabel} · ${formatEuroPrice(effectivePrice.happyHourPrice)}`
               );
             } else if (hhRangeLabel) {
-              priceDetailsParts.push(`HH ${hhRangeLabel}`);
-            } else if (effectivePrice.happyHourPrice !== null) {
-              priceDetailsParts.push(`HH : ${formatEuroPrice(effectivePrice.happyHourPrice)}`);
+              hhSubLineParts.push(`HH ${hhRangeLabel}`);
             }
-            if (effectivePrice.regularPrice !== null) {
-              priceDetailsParts.push(`Normal : ${formatEuroPrice(effectivePrice.regularPrice)}`);
+            if (effectivePrice.isHappyHour && effectivePrice.regularPrice !== null) {
+              hhSubLineParts.push(`Normal ${formatEuroPrice(effectivePrice.regularPrice)}`);
             }
-            const priceDetailsLine = priceDetailsParts.join(' · ');
+            const hhSubLine = hhSubLineParts.join(' · ');
 
             return (
               <article
@@ -362,23 +344,7 @@ export const BarList: React.FC<BarListProps> = ({
                     : 'border-[var(--border-subtle)] bg-[var(--bg-card)] hover:border-[var(--border-strong)]'
                 }`}
               >
-                {/* Cover photo from local Paris dataset */}
-                {hasCoverImage && bar.coverImageUrl && (
-                  <div className="mb-3 h-32 sm:h-36 w-full overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]">
-                    <img
-                      src={bar.coverImageUrl}
-                      alt={bar.name}
-                      loading="lazy"
-                      referrerPolicy="no-referrer"
-                      onError={() =>
-                        setBrokenImages((prev) => ({...prev, [bar.id]: true}))
-                      }
-                      className="h-full w-full object-cover"
-                    />
-                  </div>
-                )}
-
-                {/* Header Row: Rank + Title + Source Badge + Top-Right Pint / Happy Hour Pricing Block */}
+                {/* 1. En-tête : Rang + Nom + Badge provenance + Prix pinte à droite */}
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -403,87 +369,62 @@ export const BarList: React.FC<BarListProps> = ({
                     <h3 className="mt-1 truncate text-base font-semibold tracking-tight text-[var(--text-primary)]">
                       {idx + 1}. {bar.name}
                     </h3>
-
-                    {/* Nearest Metro / Transit Station */}
-                    {bar.nearestStation && (
-                      <p className="mt-0.5 text-xs font-medium text-[var(--text-muted)]">
-                        🚉 {bar.nearestStation}
-                      </p>
-                    )}
-
-                    {/* Rating + Distance + Fairness Summary */}
-                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-secondary)]">
-                      {bar.rating !== null && (
-                        <span className="inline-flex items-center gap-1 font-semibold text-[#FF9F0A] tabular-nums">
-                          <Star
-                            className="h-3.5 w-3.5 fill-[#FF9F0A] text-[#FF9F0A]"
-                            aria-hidden="true"
-                          />
-                          {bar.rating.toFixed(1)}
-                          {bar.userRatingCount !== null && (
-                            <span className="font-normal text-[var(--text-secondary)]">
-                              ({bar.userRatingCount})
-                            </span>
-                          )}
-                        </span>
-                      )}
-                      {bar.rating !== null && <span aria-hidden="true">·</span>}
-                      <span className="tabular-nums">{Math.round(bar.distanceFromCenterMeters)} m</span>
-                      {maxMinutes !== null && avgMinutes !== null && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span className="text-[var(--text-muted)] tabular-nums">
-                            max {maxMinutes} min · moy. {avgMinutes} min
-                          </span>
-                        </>
-                      )}
-                    </div>
                   </div>
 
-                  {/* Top-Right Clear Pint / Happy Hour Pricing Block */}
-                  <div className="flex max-w-[165px] shrink-0 flex-col items-end text-right">
+                  {/* Bloc prix de la pinte à droite */}
+                  <div className="flex max-w-[150px] shrink-0 flex-col items-end text-right">
                     <span
-                      className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-bold whitespace-nowrap tabular-nums ${
+                      className={`text-sm font-bold whitespace-nowrap tabular-nums ${
                         effectivePrice.isHappyHour
-                          ? 'border-[#30D158]/50 bg-[#30D158]/20 text-[#30D158]'
+                          ? 'text-[#30D158]'
                           : cheapHighlight
-                          ? 'border-[#30D158]/35 bg-[#30D158]/15 text-[#30D158]'
+                          ? 'text-[#30D158]'
                           : effectivePrice.price !== null || priceInfo.tier === 'medium'
-                          ? 'border-[#FF9F0A]/35 bg-[#FF9F0A]/15 text-[#FF9F0A]'
-                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-secondary)]'
+                          ? 'text-[#FF9F0A]'
+                          : 'text-[var(--text-secondary)]'
                       }`}
                     >
-                      {badgeLabel}
+                      {activePriceLabel}
                     </span>
-                    {priceDetailsLine && (
-                      <p className="mt-1 text-[10px] leading-snug text-[var(--text-secondary)] tabular-nums">
-                        {priceDetailsLine}
-                      </p>
+                    {hhSubLine && (
+                      <span className="mt-0.5 text-[10px] leading-tight text-[var(--text-secondary)] tabular-nums">
+                        {hhSubLine}
+                      </span>
                     )}
                   </div>
                 </div>
 
-                {/* Address + Opening Status */}
-                <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-secondary)]">
-                  <span className="inline-flex min-w-0 items-center gap-1.5">
-                    <MapPin className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                    <span className="truncate">{bar.address}</span>
+                {/* 2. Infos clés sur 1 ligne : Adresse · Note · Temps moyen & max */}
+                <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-[var(--text-secondary)]">
+                  <span className="inline-flex min-w-0 max-w-full items-center gap-1">
+                    <MapPin className="h-3 w-3 shrink-0" aria-hidden="true" />
+                    <span className="truncate max-w-[175px] sm:max-w-[230px]">
+                      {bar.address}
+                    </span>
                   </span>
-                  {bar.closesLabel && (
+                  {bar.rating !== null && (
                     <>
                       <span aria-hidden="true">·</span>
-                      <span
-                        className={`font-medium ${
-                          bar.isOpenAtTarget === false ? 'text-[#FF453A]' : 'text-[#30D158]'
-                        }`}
-                      >
-                        {bar.closesLabel}
+                      <span className="inline-flex items-center gap-0.5 font-semibold text-[#FF9F0A] tabular-nums whitespace-nowrap">
+                        <Star
+                          className="h-3 w-3 fill-[#FF9F0A] text-[#FF9F0A]"
+                          aria-hidden="true"
+                        />
+                        {bar.rating.toFixed(1)}
+                      </span>
+                    </>
+                  )}
+                  {avgMinutes !== null && maxMinutes !== null && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-[var(--text-muted)] tabular-nums whitespace-nowrap">
+                        moy. {avgMinutes} min · max {maxMinutes} min
                       </span>
                     </>
                   )}
                 </div>
 
-                {/* Door-to-door Participant Travel Summaries */}
+                {/* 3. Temps de trajet de chaque participant (OBLIGATOIRE) */}
                 {participants.length > 0 && (
                   <div className="mt-3 space-y-1.5">
                     {participants.map((p) => {
@@ -492,18 +433,18 @@ export const BarList: React.FC<BarListProps> = ({
                       return (
                         <div
                           key={p.id}
-                          className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs"
+                          className="flex items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs"
                         >
                           <div className="flex min-w-0 items-center gap-1.5">
                             <span aria-hidden="true">{getModeEmoji(p.mode)}</span>
-                            <span className="font-semibold text-[var(--text-primary)] truncate max-w-[90px]">
+                            <span className="font-semibold text-[var(--text-primary)] truncate max-w-[95px]">
                               {p.name}
                             </span>
                             <span aria-hidden="true" className="text-[var(--text-secondary)]">
                               :
                             </span>
                             <span
-                              className={`font-bold tabular-nums ${
+                              className={`font-bold tabular-nums whitespace-nowrap ${
                                 isFast ? 'text-[#30D158]' : 'text-[var(--text-primary)]'
                               }`}
                             >
@@ -694,44 +635,37 @@ export const BarList: React.FC<BarListProps> = ({
                   </div>
                 )}
 
-                {/* "Y aller" + Vote Pill */}
+                {/* Clean Actions Row: "Y aller" + "Agenda (.ics)" on #1 QG */}
                 <div
-                  className="mt-3.5 flex flex-wrap items-center justify-end gap-2 border-t border-[var(--border-subtle)] pt-3"
+                  className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-2.5"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <div className="flex items-center gap-2 ml-auto">
+                  {isWinner ? (
                     <button
                       type="button"
-                      onClick={() => setOpenNavBarId(isNavOpen ? null : bar.id)}
-                      aria-expanded={isNavOpen}
-                      className={`inline-flex min-h-[40px] items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
-                        isNavOpen
-                          ? 'border-[#0A84FF]/50 bg-[#0A84FF]/20 text-[#0A84FF]'
-                          : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:bg-[var(--bg-surface-hover)]'
-                      }`}
+                      onClick={() => onAddToCalendar(bar)}
+                      className="inline-flex min-h-[36px] items-center gap-1.5 rounded-full border border-[#30D158]/35 bg-[#30D158]/15 px-3 py-1 text-xs font-semibold text-[#30D158] transition-colors hover:bg-[#30D158]/25 whitespace-nowrap"
                     >
-                      <Navigation className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span>Y aller</span>
+                      <CalendarPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>Agenda (.ics)</span>
                     </button>
+                  ) : (
+                    <div />
+                  )}
 
-                    <button
-                      type="button"
-                      onClick={() => onToggleVote(bar.id)}
-                      className={`inline-flex min-h-[40px] items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-semibold transition-all whitespace-nowrap ${
-                        hasVoted
-                          ? 'bg-[#0A84FF] text-white shadow-sm'
-                          : 'border border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:border-[#0A84FF]/60'
-                      }`}
-                    >
-                      {hasVoted ? (
-                        <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                      ) : (
-                        <ThumbsUp className="h-3.5 w-3.5" aria-hidden="true" />
-                      )}
-                      <span>{hasVoted ? 'Voté' : 'Voter'}</span>
-                      <span className="tabular-nums">({barVotes.length})</span>
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setOpenNavBarId(isNavOpen ? null : bar.id)}
+                    aria-expanded={isNavOpen}
+                    className={`inline-flex min-h-[38px] items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                      isNavOpen
+                        ? 'border-[#0A84FF]/50 bg-[#0A84FF]/20 text-[#0A84FF]'
+                        : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:bg-[var(--bg-surface-hover)]'
+                    }`}
+                  >
+                    <Navigation className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Y aller</span>
+                  </button>
                 </div>
 
                 {/* Inline "Y aller" Google Maps / Citymapper Drawer */}
@@ -761,29 +695,6 @@ export const BarList: React.FC<BarListProps> = ({
                       <span>Citymapper</span>
                       <ExternalLink className="h-3 w-3" aria-hidden="true" />
                     </a>
-                  </div>
-                )}
-
-                {/* Voters & Calendar .ics */}
-                {(barVotes.length > 0 || isWinner) && (
-                  <div
-                    className="mt-2.5 flex flex-wrap items-center justify-between gap-2 text-xs"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="text-[#FF9F0A]">
-                      {barVotes.length > 0 && <span>Votes : {barVotes.join(', ')}</span>}
-                    </div>
-
-                    {isWinner && (
-                      <button
-                        type="button"
-                        onClick={() => onAddToCalendar(bar)}
-                        className="inline-flex min-h-[36px] items-center gap-1.5 rounded-full border border-[#30D158]/35 bg-[#30D158]/15 px-3 py-1 text-xs font-semibold text-[#30D158] transition-colors hover:bg-[#30D158]/25 whitespace-nowrap"
-                      >
-                        <CalendarPlus className="h-3.5 w-3.5" aria-hidden="true" />
-                        <span>Agenda (.ics)</span>
-                      </button>
-                    )}
                   </div>
                 )}
 

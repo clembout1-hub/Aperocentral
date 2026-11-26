@@ -86,10 +86,6 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
             sessions.map((record) => {
               const isActive = record.id === activeSessionId;
               const pCount = record.session.participants.length;
-              const voteCount = Object.values(record.session.votes).reduce(
-                (acc, arr) => acc + arr.length,
-                0
-              );
 
               return (
                 <div
@@ -129,11 +125,6 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                           {pCount} ami{pCount > 1 ? 's' : ''}
                         </span>
                       </span>
-                      {voteCount > 0 && (
-                        <span className="text-[#FF9F0A] tabular-nums">
-                          {voteCount} vote{voteCount > 1 ? 's' : ''}
-                        </span>
-                      )}
                     </div>
                   </button>
 

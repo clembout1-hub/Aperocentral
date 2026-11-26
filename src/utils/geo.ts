@@ -892,9 +892,6 @@ export function buildMessengerRecapText(
         ? ` · HH ${formatEuroPrice(effectivePrice.price)}`
         : ` · Pinte ${formatEuroPrice(effectivePrice.price)}`
       : '';
-  const voteCount = (session.votes[bar.id] || []).length;
-  const voteLine = voteCount > 0 ? ` (${voteCount} vote${voteCount > 1 ? 's' : ''})` : '';
-
   const participantLines = session.participants.map((p) => {
     const t = travelTimesByParticipant[p.id];
     const durationStr = t ? formatDuration(t.durationSeconds) : 'N/C';
@@ -910,7 +907,7 @@ export function buildMessengerRecapText(
   const citymapperUrl = buildCitymapperUrl(bar);
 
   return [
-    `🍻 *${session.title}*${voteLine}`,
+    `🍻 *${session.title}*`,
     `📍 *${bar.name}*${priceTag}`,
     bar.nearestStation ? `🚉 Métro/Station : ${bar.nearestStation}` : null,
     `🏠 ${bar.address}`,

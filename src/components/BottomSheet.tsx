@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
-import {ChevronUp, LogIn, UserCheck} from 'lucide-react';
+import {ChevronUp} from 'lucide-react';
 
 export type SheetSnap = 'low' | 'mid' | 'high';
 export type SheetTab = 'participants' | 'bars';
@@ -12,9 +12,6 @@ interface BottomSheetProps {
   participantsCount: number;
   barsCount: number;
   summaryText: string;
-  connectedUsername: string | null;
-  pendingInvitesCount?: number;
-  onOpenAccountModal: () => void;
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
   footer: React.ReactNode;
   children: React.ReactNode;
@@ -36,9 +33,6 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({
   participantsCount,
   barsCount,
   summaryText,
-  connectedUsername,
-  pendingInvitesCount = 0,
-  onOpenAccountModal,
   scrollContainerRef,
   footer,
   children,
@@ -217,48 +211,12 @@ export const BottomSheet: React.FC<BottomSheetProps> = ({
           </button>
         )}
 
-        {/* Drawer Top Bar: Compact "Connexion / Compte" + Segmented Control */}
+        {/* Drawer Top Bar: Clean Segmented Control */}
         <div
           className={`${
             snap === 'low' ? 'hidden lg:block' : 'block'
-          } space-y-2`}
+          }`}
         >
-          <div className="flex items-center justify-between gap-2">
-            <button
-              type="button"
-              data-no-drag="true"
-              onClick={onOpenAccountModal}
-              className={`inline-flex min-h-[34px] max-w-full items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-colors ${
-                connectedUsername
-                  ? 'border-[#0A84FF]/40 bg-[#0A84FF]/12 text-[var(--text-primary)] hover:bg-[#0A84FF]/20'
-                  : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:border-[#0A84FF]/50'
-              }`}
-            >
-              {connectedUsername ? (
-                <UserCheck className="h-3.5 w-3.5 shrink-0 text-[#0A84FF]" aria-hidden="true" />
-              ) : (
-                <LogIn className="h-3.5 w-3.5 shrink-0 text-[#0A84FF]" aria-hidden="true" />
-              )}
-              <span className="truncate">Connexion / Compte</span>
-              <span
-                className={`rounded-full px-2 py-0.5 text-[10px] font-bold truncate max-w-[110px] ${
-                  connectedUsername
-                    ? 'bg-[#0A84FF] text-white'
-                    : 'bg-[var(--bg-card-strong)] text-[var(--text-secondary)]'
-                }`}
-              >
-                {connectedUsername || 'Se connecter'}
-              </span>
-              {pendingInvitesCount > 0 && (
-                <span
-                  aria-label={`${pendingInvitesCount} invitation(s) en attente`}
-                  className="rounded-full bg-[#FF453A] px-1.5 py-0.5 text-[10px] font-bold text-white tabular-nums"
-                >
-                  {pendingInvitesCount}
-                </span>
-              )}
-            </button>
-          </div>
 
           <div
             className="grid grid-cols-2 gap-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-1"

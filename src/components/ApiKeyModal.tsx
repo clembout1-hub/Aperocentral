@@ -79,7 +79,7 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               htmlFor="gmaps-api-key-input"
               className="block text-xs font-medium text-[var(--text-secondary)]"
             >
-              Clé API personnalisée (Maps JS, Places New, Routes)
+              Clé API de secours (Maps JS, Places New, Routes)
             </label>
             <input
               id="gmaps-api-key-input"
@@ -87,12 +87,20 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
               autoComplete="off"
               value={draftKey}
               onChange={(e) => setDraftKey(e.target.value)}
-              placeholder={envApiKeyPresent ? 'Clé par défaut active (saisir pour remplacer)' : 'AIzaSy...'}
+              placeholder={
+                envApiKeyPresent
+                  ? 'Laisser vide (clé serveur active par défaut)'
+                  : 'AIzaSy...'
+              }
               className="mt-1.5 min-h-[44px] w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-input)] px-3.5 py-2.5 font-mono text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:border-[#0A84FF] focus:outline-none"
             />
-            {envApiKeyPresent && !customApiKey && (
-              <p className="mt-1.5 text-xs text-[#30D158]">
-                Une clé d&apos;environnement (VITE_GOOGLE_MAPS_API_KEY) est déjà configurée.
+            {envApiKeyPresent ? (
+              <p className="mt-1.5 text-xs font-medium text-[#30D158]">
+                Clé serveur active par défaut (laisser vide sauf pour utiliser votre propre clé de secours).
+              </p>
+            ) : (
+              <p className="mt-1.5 text-xs text-[var(--text-secondary)]">
+                Laisser vide si une clé serveur est configurée, ou saisis ta propre clé de secours.
               </p>
             )}
           </div>
@@ -112,14 +120,14 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
           </div>
 
           <div className="flex items-center justify-between gap-2 pt-1">
-            {customApiKey ? (
+            {customApiKey.trim() ? (
               <button
                 type="button"
                 onClick={handleClear}
                 className="inline-flex min-h-[42px] items-center gap-1.5 rounded-full border border-[#FF453A]/30 bg-[#FF453A]/15 px-4 py-2 text-xs font-semibold text-[#FF453A] hover:bg-[#FF453A]/25"
               >
                 <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Effacer</span>
+                <span>Supprimer ma clé</span>
               </button>
             ) : (
               <span />

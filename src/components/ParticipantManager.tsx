@@ -15,6 +15,7 @@ import {
 import type {
   Participant,
   SharedGroupWithMembers,
+  SupabaseProfile,
   TransportMode,
 } from '../types/apero';
 import {getModeLabel} from '../utils/geo';
@@ -23,11 +24,12 @@ import {AddressAutocompleteInput} from './AddressAutocompleteInput';
 interface ParticipantManagerProps {
   participants: Participant[];
   isAuthenticated: boolean;
+  currentUserProfile: SupabaseProfile | null;
   groups: SharedGroupWithMembers[];
   mapsReady: boolean;
   onUpsertParticipant: (participant: Participant) => void;
   onRemoveParticipant: (participantId: string) => void;
-  onSetActiveUserName: (name: string) => void;
+  onAddSelf: () => void;
   onLaunchGroup: (group: SharedGroupWithMembers) => void;
   onOpenGroupsModal: () => void;
 }
@@ -51,11 +53,12 @@ const AVATAR_TONES = [
 export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
   participants,
   isAuthenticated,
+  currentUserProfile,
   groups,
   mapsReady,
   onUpsertParticipant,
   onRemoveParticipant,
-  onSetActiveUserName,
+  onAddSelf,
   onLaunchGroup,
   onOpenGroupsModal,
 }) => {
@@ -109,45 +112,79 @@ export const ParticipantManager: React.FC<ParticipantManagerProps> = ({
     };
 
     onUpsertParticipant(participant);
-    onSetActiveUserName(cleanName);
     resetFormToFresh();
     nameInputRef.current?.focus();
   };
+
+  const isSelfAdded = Boolean(
+    currentUserProfile &&
+      participants.some(
+        (p) =>
+          p.id === `self_${currentUserProfile.id}` ||
+          p.id === `member_${currentUserProfile.id}`
+      )
+  );
 
   return (
     <section
       aria-labelledby="participants-heading"
       className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-card)] p-4 backdrop-blur-xl transition-colors space-y-3.5"
     >
-      {/* Quick Group Loader ("Charger un groupe") shown only when logged in */}
-      {isAuthenticated && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-2">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-primary)]">
-            <Users className="h-3.5 w-3.5 text-[#0A84FF] shrink-0" aria-hidden="true" />
-            <span>Charger un groupe</span>
-          </div>
+      {/* Quick Self-Add & Group Loader shown only when logged in to Supabase */}
+      {isAuthenticated && currentUserProfile && (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onAddSelf}
+            className={`inline-flex min-h-[34px] items-center gap-1 rounded-full border px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+              isSelfAdded
+                ? 'border-[#30D158]/40 bg-[#30D158]/15 text-[#30D158]'
+                : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] text-[var(--text-primary)] hover:border-[#0A84FF]/50 hover:text-[#0A84FF]'
+            }`}
+          >
+            {isSelfAdded ? (
+              <>
+                <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>{currentUserProfile.username} ajouté</span>
+              </>
+            ) : (
+              <span>+ M&apos;ajouter ({currentUserProfile.username})</span>
+            )}
+          </button>
 
           {groups.length > 0 ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              {groups.map((grp) => (
-                <button
-                  key={grp.id}
-                  type="button"
-                  onClick={() => onLaunchGroup(grp)}
-                  className="inline-flex min-h-[30px] items-center gap-1 rounded-full border border-[#0A84FF]/40 bg-[#0A84FF]/15 px-3 py-1 text-xs font-semibold text-[#0A84FF] transition-colors hover:bg-[#0A84FF] hover:text-white active:scale-[0.98]"
-                >
-                  <span>{grp.name}</span>
-                </button>
-              ))}
+            <div className="relative inline-flex items-center">
+              <Users
+                className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-[#0A84FF]"
+                aria-hidden="true"
+              />
+              <select
+                aria-label="Charger un groupe"
+                value=""
+                onChange={(e) => {
+                  const selected = groups.find((g) => g.id === e.target.value);
+                  if (selected) onLaunchGroup(selected);
+                }}
+                className="min-h-[34px] cursor-pointer appearance-none rounded-full border border-[#0A84FF]/40 bg-[#0A84FF]/12 pl-8 pr-6 py-1 text-xs font-semibold text-[#0A84FF] focus:border-[#0A84FF] focus:outline-none"
+              >
+                <option value="" disabled>
+                  Charger un groupe…
+                </option>
+                {groups.map((grp) => (
+                  <option key={grp.id} value={grp.id}>
+                    {grp.name} ({grp.members.length})
+                  </option>
+                ))}
+              </select>
             </div>
           ) : (
             <button
               type="button"
               onClick={onOpenGroupsModal}
-              className="inline-flex min-h-[30px] items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-card-strong)] px-3 py-1 text-[11px] font-semibold text-[#0A84FF] hover:border-[#0A84FF]/50"
+              className="inline-flex min-h-[34px] items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)] hover:border-[#0A84FF]/50 hover:text-[#0A84FF] whitespace-nowrap"
             >
-              <Plus className="h-3 w-3" aria-hidden="true" />
-              <span>Créer un groupe</span>
+              <Users className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span>Charger un groupe</span>
             </button>
           )}
         </div>
